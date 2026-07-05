@@ -1,0 +1,16 @@
+paddlex[cv,ocr]==3.7.0
+pillow==11.1.0
+
+# Required by PaddleX's TextRecRunnerPredictor for RTL script handling (e.g. Arabic).
+python-bidi==0.6.6
+
+# EasyOCR backend — reuses the torch/torchvision already pinned in the Dockerfile,
+# GPU support is just Reader(gpu=True).
+easyocr==1.7.2
+
+# RapidOCR backend — using the PaddlePaddle engine (reuses already-installed
+# paddlepaddle-gpu) rather than onnxruntime-gpu, to avoid a second CUDA-matched-wheel pin.
+rapidocr>=3.0
+
+# Tesseract backend — CPU-only, no GPU acceleration path exists in mainline Tesseract.
+pytesseract==0.3.13

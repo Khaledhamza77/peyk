@@ -1,73 +1,48 @@
-flowchart TD
-    SDK["Company SDK / CLI client"]
-
-    subgraph API["API layer (serverless)"]
+---
+config:
+  theme: mc
+---
+flowchart TB
+ subgraph API["API layer (serverless)"]
         APIGW["Amazon API Gateway"]
         SubmitFn["Lambda: submit"]
         StatusFn["Lambda: status / result"]
-    end
-
-    subgraph Queuing["Job queuing"]
+  end
+ subgraph Queuing["Job queuing"]
         SQSQueue["SQS: job queue"]
-    end
-
-    subgraph Storage["Storage & job state"]
+  end
+ subgraph Storage["Storage & job state"]
         S3In["S3: input docs"]
         S3Out["S3: output markdown fragments"]
         DynamoDB["DynamoDB: job status"]
-    end
+  end
+ subgraph GPU["EC2 g4dn.xlarge (T4 GPU) - manually started/stopped"]
+    direction TB
+        Orchestrator@{ label: "peyk-orchestrator\\nreads model-choice config, dispatches containers below in sequence,\\ndoes born-digital/scanned check, assembles fragments\\n(concatenated using peyk-layout's region order)" }
+        Layout["peyk-layout - Layout Understanding\nSupported: PP-DocLayoutV2, Surya-Layout, DocLayout-YOLO, Heron\nOptional/stretch: Detectron2"]
+        BDCheck{{"Born-digital or scanned?\npage-level check, done by peyk-orchestrator\n(interim - target: per-region)"}}
+        DCR["peyk-dcr - Text, born-digital\nDirect text extraction from source PDF, no model"]
+        OCR["peyk-ocr - Text, scanned (self-hosted only)\nSupported: PaddleOCR, AIN-7B, EasyOCR, Surya-recognition, Tesseract, RapidOCR,\nPaddleOCR-VL-0.9B, Granite-Docling-258M"]
+        TSR["peyk-tsr - Tables: TSR always applied, +OCR/VLM if scanned\nSupported: TableFormer, TATR, RapidTable, PP-StructureV3"]
+        VLM["peyk-vlm - Bedrock calls (the only container that calls Bedrock)\nRole 1: figures/charts/stamps description\nRole 2: OCR fallback or full replacement for scanned text (config-driven)\nSupported: Claude Haiku 4.5, Claude Sonnet 5, Claude Opus 4.5,\nAmazon Nova Premier, Amazon Nova Lite"]
+  end
+    Orchestrator --> Layout
+    Layout --> BDCheck & VLM
+    BDCheck -- "born-digital" --> DCR & TSR
+    BDCheck -- scanned --> OCR & TSR
+    OCR -. "fallback or replacement\n(config-driven)" .-> VLM
+    SDK["Company SDK / CLI client"] -- "1. submit doc" --> APIGW
+    APIGW --> SubmitFn & StatusFn
+    SubmitFn -- store doc --> S3In
+    SubmitFn -- "create job (status=queued)" --> DynamoDB
+    SubmitFn -- send message --> SQSQueue
+    SQSQueue -- "2. drain batch" --> Orchestrator
+    Orchestrator -- fetch docs --> S3In
+    Orchestrator -- "3. write fragments" --> S3Out
+    Orchestrator -- "update job (status=complete)" --> DynamoDB
+    SDK -- "4. poll status / fetch result" --> APIGW
+    StatusFn -- read status --> DynamoDB
+    StatusFn -- presigned URL --> S3Out
+    StatusFn -- result --> SDK
 
-    subgraph GPU["EC2 g4dn.xlarge (T4 GPU) - manually started/stopped\none model container loaded at a time"]
-        direction TB
-        Orchestrator["Batch orchestrator\n(drains queue, runs stages sequentially)"]
-
-        Layout["Step 1 - Layout Understanding\nSupported: PP-DocLayoutV2, Surya-Layout, DocLayout-YOLO, Heron\nOptional/stretch: Detectron2"]
-
-        BDCheck{{"Born-digital or scanned?\npage-level check (interim - target: per-region)"}}
-
-        TextDirect["Text, born-digital: direct text extraction (no OCR)"]
-
-        TextOCR["Text, scanned: OCR\nSupported: PaddleOCR, AIN-7B, EasyOCR, Surya-recognition, Tesseract, RapidOCR,\nPaddleOCR-VL-0.9B, Granite-Docling-258M"]
-
-        TableTSR["Tables: TSR always applied, +OCR if scanned (same pool as Text)\nSupported: TableFormer, TATR, RapidTable, PP-StructureV3"]
-
-        FigureVLM["Figures / charts / stamps: VLM description\nSupported: Claude Haiku 4.5, Claude Sonnet 5, Claude Opus 4.5,\nAmazon Nova Premier, Amazon Nova Lite,\nPaddleOCR-VL-0.9B, Granite-Docling-258M"]
-
-        Orchestrator --> Layout
-        Layout --> BDCheck
-        Layout --> FigureVLM
-        BDCheck -->|"born-digital"| TextDirect
-        BDCheck -->|"scanned"| TextOCR
-        BDCheck -->|"born-digital"| TableTSR
-        BDCheck -->|"scanned"| TableTSR
-    end
-
-    Bedrock["Amazon Bedrock\nOCR fallback + figure/chart/stamp description (Claude Haiku 4.5)"]
-
-    MDOut["Step 2 output - Markdown fragments per element\n(assembly / reading-order out of scope)"]
-
-    SDK -->|"1. submit doc"| APIGW
-    APIGW --> SubmitFn
-    SubmitFn -->|"store doc"| S3In
-    SubmitFn -->|"create job (status=queued)"| DynamoDB
-    SubmitFn -->|"send message"| SQSQueue
-
-    SQSQueue -->|"2. drain batch"| Orchestrator
-    Orchestrator -->|"fetch docs"| S3In
-    TextOCR -.->|"fallback"| Bedrock
-    FigureVLM -.->|"description calls"| Bedrock
-
-    TextDirect --> MDOut
-    TextOCR --> MDOut
-    TableTSR --> MDOut
-    FigureVLM --> MDOut
-    Bedrock -.-> MDOut
-
-    MDOut -->|"3. write fragments"| S3Out
-    Orchestrator -->|"update job (status=complete)"| DynamoDB
-
-    SDK -->|"4. poll status / fetch result"| APIGW
-    APIGW --> StatusFn
-    StatusFn -->|"read status"| DynamoDB
-    StatusFn -->|"presigned URL"| S3Out
-    StatusFn -->|"result"| SDK
+    Orchestrator@{ shape: rect}

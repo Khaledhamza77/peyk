@@ -1,0 +1,51 @@
+# Example pipeline config for peyk-orchestrator.
+# layout and ocr point at built local images; dcr/tsr/vlm are stubbed until their
+# containers exist (Tasks 1.4/1.5/1.6) — flip `stub: false` and fill in image/backend
+# once each is built.
+
+layout:
+  image: peyk-layout:dev
+  backend: pp-doclayout-v2
+
+ocr:
+  # peyk-ocr was split into two images (see docs/build_notes.md's "paddleocr-vl reliability
+  # investigation"): peyk-simple-ocr bundles paddleocr/easyocr/rapidocr/tesseract (all
+  # in-process, CTC-style or classical backends); peyk-paddleocr-vl is a thin HTTP client
+  # against a separately-started, persistent vLLM server (containers/peyk-vllm-paddleocr/ —
+  # run its start.sh first) rather than loading the model in-process.
+  #
+  # `image` (and, for paddleocr-vl, `server_url`) are deliberately NOT set here — config.py's
+  # OCR_BACKEND_IMAGES derives the right image from `backend` automatically, so switching
+  # backends is just changing the one line below. Set `image`/`server_url` explicitly only to
+  # override those defaults (e.g. a differently-tagged image, or peyk-vllm-paddleocr running
+  # somewhere other than the default address).
+  #
+  # paddleocr-vl has the best quality ceiling of any backend tried (correctly handles
+  # bilingual Arabic+English lines and names every CTC-based backend garbled), now that
+  # serving it through vLLM instead of PaddleX's local `create_model()` path fixes the
+  # naive single-token generate loop, batch-size=1 hardcap, and lack of a repetition-penalty
+  # decode guard that made the local path unusably slow and non-deterministic. Still worth
+  # watching for occasional hallucination (seen once: a fabricated ID string not present in
+  # the source) — it carries no confidence signal, unlike a CTC backend's low-confidence
+  # flag on a genuine misread.
+  backend: paddleocr-vl
+  lang: arabic
+  # To use one of the classical backends instead, just change the line above to:
+  #   backend: paddleocr   # or: easyocr | rapidocr | tesseract
+
+dcr:
+  stub: true
+
+tsr:
+  stub: true
+
+vlm:
+  stub: true
+  role: fallback
+
+born_digital:
+  min_chars_per_page: 20
+  # Forces every page to be treated as scanned, so all text/table regions route through
+  # peyk-ocr instead of the peyk-dcr stub — lets OCR be exercised on a born-digital sample
+  # doc before peyk-dcr (Task 1.4) is built. Remove once peyk-dcr is real.
+  force_scanned: true

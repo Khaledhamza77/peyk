@@ -1,0 +1,7 @@
+# Only the `genai-client` extra is needed — this container makes OpenAI-compatible HTTP
+# calls to a separately-run vLLM server (peyk-vllm-paddleocr/), it never loads model weights
+# or runs inference itself, so the `cv`/`ocr` extras (and paddlepaddle-gpu, and a CUDA base
+# image) that peyk-simple-ocr needs are dead weight here.
+paddlex[genai-client]==3.7.0
+openai>=1.63
+pillow==11.1.0

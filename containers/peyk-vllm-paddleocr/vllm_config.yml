@@ -1,0 +1,14 @@
+# Passed to `paddleocr genai_server --backend_config` (see start.sh). Keys map onto vLLM's
+# own AsyncEngineArgs — this server shares a 12GB card with peyk-layout/peyk-simple-ocr's
+# per-stage `docker run --gpus all` calls, and vLLM's default gpu_memory_utilization (0.9)
+# would starve them.
+#
+# 0.35 was tried first and failed outright: PaddleX's own defaults for this model request
+# max_model_len=16384 and max_num_batched_tokens=131072, and vLLM's torch.compile/CUDA-graph
+# capture (batch sizes up to 512 — far beyond what one-crop-at-a-time OCR ever needs) already
+# consumes more than a 0.35 budget on its own, before any KV cache is allocated ("Available
+# KV cache memory: -1.98 GiB"). 0.7 leaves that overhead room; tune down if
+# peyk-layout/peyk-simple-ocr stages start OOMing while this is up, tune further down only
+# after also overriding max_model_len/max_num_batched_tokens smaller (this workload never
+# needs 16384 tokens of context) if 0.7 alone isn't enough headroom to share.
+gpu_memory_utilization: 0.7
