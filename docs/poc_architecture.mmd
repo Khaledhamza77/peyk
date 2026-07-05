@@ -1,0 +1,73 @@
+flowchart TD
+    SDK["Company SDK / CLI client"]
+
+    subgraph API["API layer (serverless)"]
+        APIGW["Amazon API Gateway"]
+        SubmitFn["Lambda: submit"]
+        StatusFn["Lambda: status / result"]
+    end
+
+    subgraph Queuing["Job queuing"]
+        SQSQueue["SQS: job queue"]
+    end
+
+    subgraph Storage["Storage & job state"]
+        S3In["S3: input docs"]
+        S3Out["S3: output markdown fragments"]
+        DynamoDB["DynamoDB: job status"]
+    end
+
+    subgraph GPU["EC2 g4dn.xlarge (T4 GPU) - manually started/stopped\none model container loaded at a time"]
+        direction TB
+        Orchestrator["Batch orchestrator\n(drains queue, runs stages sequentially)"]
+
+        Layout["Step 1 - Layout Understanding\nSupported: PP-DocLayoutV2, Surya-Layout, DocLayout-YOLO, Heron\nOptional/stretch: Detectron2"]
+
+        BDCheck{{"Born-digital or scanned?\npage-level check (interim - target: per-region)"}}
+
+        TextDirect["Text, born-digital: direct text extraction (no OCR)"]
+
+        TextOCR["Text, scanned: OCR\nSupported: PaddleOCR, AIN-7B, EasyOCR, Surya-recognition, Tesseract, RapidOCR,\nPaddleOCR-VL-0.9B, Granite-Docling-258M"]
+
+        TableTSR["Tables: TSR always applied, +OCR if scanned (same pool as Text)\nSupported: TableFormer, TATR, RapidTable, PP-StructureV3"]
+
+        FigureVLM["Figures / charts / stamps: VLM description\nSupported: Claude Haiku 4.5, Claude Sonnet 5, Claude Opus 4.5,\nAmazon Nova Premier, Amazon Nova Lite,\nPaddleOCR-VL-0.9B, Granite-Docling-258M"]
+
+        Orchestrator --> Layout
+        Layout --> BDCheck
+        Layout --> FigureVLM
+        BDCheck -->|"born-digital"| TextDirect
+        BDCheck -->|"scanned"| TextOCR
+        BDCheck -->|"born-digital"| TableTSR
+        BDCheck -->|"scanned"| TableTSR
+    end
+
+    Bedrock["Amazon Bedrock\nOCR fallback + figure/chart/stamp description (Claude Haiku 4.5)"]
+
+    MDOut["Step 2 output - Markdown fragments per element\n(assembly / reading-order out of scope)"]
+
+    SDK -->|"1. submit doc"| APIGW
+    APIGW --> SubmitFn
+    SubmitFn -->|"store doc"| S3In
+    SubmitFn -->|"create job (status=queued)"| DynamoDB
+    SubmitFn -->|"send message"| SQSQueue
+
+    SQSQueue -->|"2. drain batch"| Orchestrator
+    Orchestrator -->|"fetch docs"| S3In
+    TextOCR -.->|"fallback"| Bedrock
+    FigureVLM -.->|"description calls"| Bedrock
+
+    TextDirect --> MDOut
+    TextOCR --> MDOut
+    TableTSR --> MDOut
+    FigureVLM --> MDOut
+    Bedrock -.-> MDOut
+
+    MDOut -->|"3. write fragments"| S3Out
+    Orchestrator -->|"update job (status=complete)"| DynamoDB
+
+    SDK -->|"4. poll status / fetch result"| APIGW
+    APIGW --> StatusFn
+    StatusFn -->|"read status"| DynamoDB
+    StatusFn -->|"presigned URL"| S3Out
+    StatusFn -->|"result"| SDK
