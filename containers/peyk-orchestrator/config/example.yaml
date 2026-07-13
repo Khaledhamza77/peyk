@@ -1,51 +1,47 @@
-# Example pipeline config for peyk-orchestrator.
-# layout and ocr point at built local images; dcr/tsr/vlm are stubbed until their
-# containers exist (Tasks 1.4/1.5/1.6) — flip `stub: false` and fill in image/backend
-# once each is built.
+# Pipeline config for peyk-orchestrator. Each section below is one job; `model` picks which
+# model runs it. Full peyk-vlm model list: `docker run --rm peyk-vlm:dev --list-models`.
 
+# Detects page regions (text / table / figure).
 layout:
-  image: peyk-layout:dev
-  backend: pp-doclayout-v2
+  model: heron  # or: pp-doclayout-v2 | doclayout-yolo | surya
 
-ocr:
-  # peyk-ocr was split into two images (see docs/build_notes.md's "paddleocr-vl reliability
-  # investigation"): peyk-simple-ocr bundles paddleocr/easyocr/rapidocr/tesseract (all
-  # in-process, CTC-style or classical backends); peyk-paddleocr-vl is a thin HTTP client
-  # against a separately-started, persistent vLLM server (containers/peyk-vllm-paddleocr/ —
-  # run its start.sh first) rather than loading the model in-process.
-  #
-  # `image` (and, for paddleocr-vl, `server_url`) are deliberately NOT set here — config.py's
-  # OCR_BACKEND_IMAGES derives the right image from `backend` automatically, so switching
-  # backends is just changing the one line below. Set `image`/`server_url` explicitly only to
-  # override those defaults (e.g. a differently-tagged image, or peyk-vllm-paddleocr running
-  # somewhere other than the default address).
-  #
-  # paddleocr-vl has the best quality ceiling of any backend tried (correctly handles
-  # bilingual Arabic+English lines and names every CTC-based backend garbled), now that
-  # serving it through vLLM instead of PaddleX's local `create_model()` path fixes the
-  # naive single-token generate loop, batch-size=1 hardcap, and lack of a repetition-penalty
-  # decode guard that made the local path unusably slow and non-deterministic. Still worth
-  # watching for occasional hallucination (seen once: a fabricated ID string not present in
-  # the source) — it carries no confidence signal, unlike a CTC backend's low-confidence
-  # flag on a genuine misread.
-  backend: paddleocr-vl
-  lang: arabic
-  # To use one of the classical backends instead, just change the line above to:
-  #   backend: paddleocr   # or: easyocr | rapidocr | tesseract
-
-dcr:
-  stub: true
-
+# Table structure recognition (rows/columns, no text). A peyk-vlm model is only valid here
+# when paired with the SAME model on cell_ocr below (combined structure+text in one call).
 tsr:
-  stub: true
+  model: surya  # or: tatr | rapidtable | pp-structure-general | pp-structure-wiring | tableformer | surya | a peyk-vlm model
 
-vlm:
-  stub: true
-  role: fallback
+# Scanned/non-born-digital text recognition.
+ocr:
+  model: paddleocr-vl  # or: easyocr | rapidocr | tesseract | paddleocr-vl | surya | a peyk-vlm model
+  lang: arabic
 
+# Table-cell text recognition. Optional — omit to inherit ocr.model. surya/a peyk-vlm model is
+# only valid here if it matches tsr.model exactly (see tsr above); isolated cell crops sent to
+# either otherwise produce unreliable results.
+cell_ocr:
+  model: surya
+
+# Describes figure/chart/stamp/photo regions. peyk-vlm only.
+figures:
+  model: gemini-2-5-flash
+
+# Born-digital vs. scanned page detection.
 born_digital:
   min_chars_per_page: 20
-  # Forces every page to be treated as scanned, so all text/table regions route through
-  # peyk-ocr instead of the peyk-dcr stub — lets OCR be exercised on a born-digital sample
-  # doc before peyk-dcr (Task 1.4) is built. Remove once peyk-dcr is real.
   force_scanned: true
+
+# Optional: bypass the whole per-region pipeline above and transcribe each page directly,
+# one model call per page. model: surya renders PDFs itself; any peyk-vlm model renders pages
+# first, then transcribes.
+# fullpage:
+#   model: surya
+
+# peyk-vlm supported models:
+# Tier 1
+# claude-sonnet-4-5, claude-sonnet-4-6, claude-opus-4-5, claude-opus-4-6
+# gemini-2-5-flash, gemini-2-5-flash-lite, gemini-2-5-pro, gemini-3-flash, gemini-3-1-flash-lite, gemini-3-1-pro, gemini-3-5-flash
+# Tier 2
+# kimi-k2-5
+# claude-haiku
+# Tier 3
+# deepseek-ocr, nova-lite, nova-pro, pixtral-large

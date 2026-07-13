@@ -14,6 +14,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY config.py pipeline.py stages.py run.py ./
+# Baked in only as a standalone-runnable default. Real invocations (see run_local.sh) bind-mount
+# a host config/ directory over this path at `docker run` time — otherwise editing
+# config/example.yaml on the host has no effect until the image is rebuilt.
 COPY config/ config/
 
 ENTRYPOINT ["python3", "run.py"]

@@ -1,3 +1,6 @@
 pypdfium2
 pillow
 pyyaml
+# For the tsr.backend==ocr.backend=="surya" table-routing case (pipeline.py) — predict_full's
+# HTML output gets converted to markdown here, the same way peyk-surya's own run_fullpage does.
+markdownify>=0.13
