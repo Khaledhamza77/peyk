@@ -47,6 +47,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 # `--rm` runs after the first download.
 ENV PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
 
+# EasyOCR downloads its own detector (CRAFT) + recognizer weights the first time a
+# Reader() is constructed — plain HTTP, no GPU import involved (unlike paddlepaddle-gpu
+# above), so this CAN be baked in at build time, same reasoning as Heron/DocLayout-YOLO in
+# peyk-layout's Dockerfile. Baked for both lang lists easyocr_backend.py supports
+# (arabic: ["ar","en"], latin: ["en"]) so neither --lang option re-downloads at runtime.
+# gpu=False here only affects this throwaway build-time object, not the runtime Reader
+# (which still respects `device` normally); no runtime cache volume is mounted over
+# ~/.EasyOCR, so this baked-in layer isn't at risk of being shadowed.
+RUN python3 -c "\
+import easyocr; \
+easyocr.Reader(['ar', 'en'], gpu=False); \
+easyocr.Reader(['en'], gpu=False)"
+
 COPY backends/ backends/
 COPY run.py .
 
