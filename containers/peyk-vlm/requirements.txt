@@ -1,0 +1,5 @@
+# No CUDA/GPU/model-weight deps at all — every backend here is a remote API client.
+boto3>=1.35                 # backends/bedrock.py
+google-genai>=0.7           # backends/vertex_gemini.py
+google-auth>=2.35           # backends/vertex_maas.py (bearer-token auth for the OpenAI-compatible MaaS endpoint)
+openai>=1.63                # backends/vertex_maas.py (same OpenAI-compatible-client pattern peyk-paddleocr-vl uses)
