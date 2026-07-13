@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from .base import LayoutBackend, Region
+from .base import LayoutBackend, Region, nms
 
 # DocLayNet-style class names (Docling's layout taxonomy) -> the three classes the rest
 # of the pipeline branches on.
@@ -39,59 +39,11 @@ _CONFIDENCE_THRESHOLD = 0.5
 # post_process_object_detection(..., threshold=...) — a confidence-score filter, no NMS
 # (DETR-family models are architecturally supposed to be NMS-free, but empirically this one
 # isn't: raw output on cib_sample.pdf included near-duplicate boxes even across different
-# labels, e.g. a "figure" and "text" box sharing an identical bbox). Class-agnostic, not
-# per-label: the observed duplicates weren't consistently same-label, so restricting
-# suppression to same-label pairs would have missed exactly the cross-label case above.
-_NMS_IOU_THRESHOLD = 0.5
-
-# Plain IoU (intersection/union) misses full-containment duplicates when the two boxes are
-# very different sizes: e.g. a large mis-merged box that happens to fully enclose a smaller,
-# correctly-sized one — union is dominated by the large box's area, so IoU stays low (an
-# observed real case: ~0.12) even though the smaller box is 100% inside the larger one.
-# Intersection-over-minimum-area (IoM) instead scores full containment as 1.0 regardless of
-# the size ratio between the two boxes, catching exactly this case.
-_NMS_CONTAINMENT_THRESHOLD = 0.8
-
-
-def _areas_and_intersection(
-    a: tuple[float, float, float, float], b: tuple[float, float, float, float]
-) -> tuple[float, float, float]:
-    ax0, ay0, ax1, ay1 = a
-    bx0, by0, bx1, by1 = b
-    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
-    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
-    inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
-    area_a = max(0.0, ax1 - ax0) * max(0.0, ay1 - ay0)
-    area_b = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
-    return area_a, area_b, inter
-
-
-def _overlaps(
-    a: tuple[float, float, float, float],
-    b: tuple[float, float, float, float],
-    iou_threshold: float,
-    containment_threshold: float,
-) -> bool:
-    area_a, area_b, inter = _areas_and_intersection(a, b)
-    if inter == 0.0:
-        return False
-    union = area_a + area_b - inter
-    iou = inter / union if union > 0 else 0.0
-    iom = inter / min(area_a, area_b) if min(area_a, area_b) > 0 else 0.0
-    return iou > iou_threshold or iom > containment_threshold
-
-
-def _nms(
-    regions: list[Region],
-    iou_threshold: float = _NMS_IOU_THRESHOLD,
-    containment_threshold: float = _NMS_CONTAINMENT_THRESHOLD,
-) -> list[Region]:
-    kept: list[Region] = []
-    for region in sorted(regions, key=lambda r: r.score, reverse=True):
-        if any(_overlaps(region.bbox, k.bbox, iou_threshold, containment_threshold) for k in kept):
-            continue
-        kept.append(region)
-    return kept
+# labels, e.g. a "figure" and "text" box sharing an identical bbox). base.py's nms() is
+# class-agnostic for exactly this reason — the observed duplicates weren't consistently
+# same-label, so restricting suppression to same-label pairs would have missed the
+# cross-label case above. Its default thresholds were tuned against this backend's observed
+# behavior specifically (see base.py) and are reused as-is by the other layout backends too.
 
 
 class HeronBackend(LayoutBackend):
@@ -128,4 +80,4 @@ class HeronBackend(LayoutBackend):
                     bbox=(float(pred["l"]), float(pred["t"]), float(pred["r"]), float(pred["b"])),
                 )
             )
-        return _nms(regions)
+        return nms(regions)

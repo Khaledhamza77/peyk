@@ -17,6 +17,7 @@ repeated manual/dev test requests instead of paying the load cost every call.
 """
 import argparse
 import json
+import shutil
 import sys
 import tempfile
 import time
@@ -37,6 +38,22 @@ _LABEL_COLORS = {
     "table": (0, 200, 0),
     "figure": (220, 0, 0),
 }
+
+
+def _reading_order(regions: list) -> list:
+    """Raster sort (top-to-bottom, then left-to-right by bbox) applied uniformly across every
+    backend, regardless of whether it calls base.py's nms() or not — that function's own
+    output order is descending confidence score, not page position (sorts by r.score to pick
+    which overlapping box to keep, and returns survivors in that same score-sorted order), and
+    raw detection order isn't guaranteed to be spatial either. peyk-orchestrator has no
+    reading-order logic of its own (see pipeline.md — assembly just concatenates fragments in
+    peyk-layout's own region order), so whatever order comes out of here is the final one.
+    This is a lightweight heuristic, not a real reading-order solver — correct for the
+    single-column-dominant document families this project targets (Family A financial
+    statements, Family D correspondence), wrong for a genuinely multi-column layout. Solving
+    that properly is explicitly out of scope (see pipeline.md); this is a real, cheap
+    improvement over the alternative (confidence-score order), not a claim to have solved it."""
+    return sorted(regions, key=lambda r: (r.bbox[1], r.bbox[0]))
 
 
 def draw_regions(image_path: Path, regions, out_path: Path) -> None:
@@ -78,10 +95,18 @@ def process_doc(doc_path: Path, backend, model: str, output_dir: Path, tmp_dir: 
     print(f"[peyk-layout] processing {doc_path.name}...", file=sys.stderr)
     pages_out = []
     for page_index, image_path in iter_page_images(doc_path, tmp_dir):
-        regions = backend.predict(image_path)
+        regions = _reading_order(backend.predict(image_path))
         for region in regions:
             region.page = page_index
         pages_out.extend(r.to_dict() for r in regions)
+
+        # Persisted unconditionally, not just under --visualize: peyk-orchestrator reuses this
+        # raw render for cropping instead of rasterizing the same PDF page a second time at the
+        # same RENDER_SCALE DPI (see that container's pipeline.py) — previously genuine
+        # duplicate rasterization work across both containers on every document.
+        raw_path = output_dir / f"{doc_path.stem}_p{page_index}_raw.png"
+        shutil.copyfile(image_path, raw_path)
+
         if visualize:
             viz_path = output_dir / f"{doc_path.stem}_p{page_index}.png"
             draw_regions(image_path, regions, viz_path)

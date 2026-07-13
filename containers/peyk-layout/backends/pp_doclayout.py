@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from .base import LayoutBackend, Region
+from .base import LayoutBackend, Region, nms
 
 # PP-DocLayoutV2 groups regions into many fine-grained classes (title, paragraph_title,
 # text, table, figure/image, chart, formula, seal/stamp, ...). We collapse them down to
@@ -59,4 +59,6 @@ class PPDocLayoutV2Backend(LayoutBackend):
                         bbox=(float(x0), float(y0), float(x1), float(y1)),
                     )
                 )
-        return regions
+        # See doclayout_yolo.py's predict() for why this is applied here even without
+        # independent confirmation this backend has Heron's duplicate-box problem.
+        return nms(regions)

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from .base import LayoutBackend, Region
+from .base import LayoutBackend, Region, nms
 
 # DocStructBench class names -> the three classes the rest of the pipeline branches on.
 _LABEL_MAP = {
@@ -55,4 +55,9 @@ class DocLayoutYOLOBackend(LayoutBackend):
                     bbox=(x0, y0, x1, y1),
                 )
             )
-        return regions
+        # Not independently confirmed to have Heron's duplicate-box problem (this backend
+        # isn't the picked default, so it hasn't seen the same real-document scrutiny) — applied
+        # as a safety net regardless, using base.py's thresholds as-is: a clean, non-overlapping
+        # prediction set is untouched by this either way, so there's no real cost if it turns
+        # out not to be needed here.
+        return nms(regions)
