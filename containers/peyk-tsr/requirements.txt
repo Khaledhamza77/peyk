@@ -1,0 +1,14 @@
+paddlex[cv]==3.7.0
+pillow==11.1.0
+
+# TATR backend — timm provides the ResNet backbone TableTransformerConvEncoder wraps
+transformers>=4.45
+timm>=1.0
+
+# RapidTable backend
+rapid_table>=1.0
+
+# TableFormer backend (docling-ibm-models, same package/version peyk-layout's Heron
+# backend uses)
+docling-ibm-models[opencv-python-headless]==3.9.0
+huggingface_hub==0.28.1
