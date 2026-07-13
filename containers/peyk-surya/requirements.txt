@@ -1,0 +1,22 @@
+# This container makes no GPU calls of its own — it's an HTTP client against the persistent
+# peyk-vllm-surya server (see that container), which does the actual GPU inference.
+# DetectionPredictor (the one Surya class that runs locally, no server call) is deliberately
+# out of scope for v1 — see implementation_plan.md Task 1.8. That said, surya-ocr itself still
+# has a hard, unconditional dependency on torch (confirmed via the build log below pulling in
+# transformers during resolution) regardless of whether DetectionPredictor is ever imported —
+# pip installs a package's full declared dependency tree, not just what a given code path
+# happens to use. See the Dockerfile for how the CUDA-bundled torch wheel (pip's Linux default)
+# is avoided in favor of the CPU-only build.
+# Exact-pinned (not >=0.9) for the same determinism reason every other dependency here is
+# pinned — >=0.9 alone made pip walk every surya-ocr release from 0.20.0 down to 0.9.0 trying
+# to satisfy pillow's constraint before failing.
+surya-ocr==0.20.0
+pypdfium2==4.30.0
+# surya-ocr requires pillow<11.0.0 (transformers/torchvision-era constraint) — 11.1.0 (copied
+# from peyk-paddleocr-vl's requirements.txt without checking Surya's own bound) conflicts with
+# every surya-ocr version and fails the build outright. 10.4.0 is the last 10.x release.
+pillow==10.4.0
+markdownify>=0.13
+# Already a transitive dependency of surya-ocr (its own settings.py has a DISABLE_TQDM flag),
+# but declared explicitly since run.py imports it directly for --stage ocr's progress bar.
+tqdm>=4.66
