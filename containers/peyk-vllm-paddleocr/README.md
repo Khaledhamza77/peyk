@@ -44,6 +44,9 @@ PaddleX's built-in `DocVLMGenAIClientPredictor` already knows how to speak to (v
 
 ## GPU memory
 
-`vllm_config.yml` caps `gpu_memory_utilization` at 0.35 so this long-lived server leaves
-headroom for `peyk-layout`/`peyk-simple-ocr`'s per-stage `--gpus all` runs on the same
-12GB card. Adjust if you see OOMs either direction.
+`vllm_config.yml` caps `gpu_memory_utilization` at **0.7**, leaving the rest of the card free
+for `peyk-layout`/`peyk-simple-ocr`/`peyk-tsr`'s per-stage `--gpus all` runs. 0.35 was tried
+first and failed outright: vLLM's own `torch.compile`/CUDA-graph capture for this model already
+exceeds a 0.35 budget before any KV cache is allocated ("Available KV cache memory: -1.98 GiB").
+Adjust down only after also shrinking `max_model_len`/`max_num_batched_tokens` (see
+`vllm_config.yml`'s own comments) if 0.7 alone isn't enough headroom to share.
