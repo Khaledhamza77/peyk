@@ -6,6 +6,18 @@
 # classes this container's code actually calls.
 FROM python:3.10-slim
 
+# Installs only the docker CLI binary (not the daemon) — peyk-surya needs this to dispatch
+# peyk-tsr itself (docker-in-docker via the host socket mounted at runtime, see
+# containers/peyk-orchestrator/pipeline.py's dispatch_table_full_batch and stages.py) when a
+# table crop is too blurry to recognize in one shot and needs TableFormer's row/column
+# structure to know where to split it. See docs-personal/surya/improvement.md's "Before
+# integrating" section, decision 1.
+# Deliberately `docker-cli`, not `docker.io`: on this Debian base, docker.io's actual `docker`
+# client binary lives in the separate docker-cli package, pulled in only as a Recommends —
+# `apt-get install docker.io --no-install-recommends` installs dockerd/containerd/runc but
+# never the client itself. docker-cli alone gets just the CLI, no daemon.
+RUN apt-get update && apt-get install -y --no-install-recommends docker-cli && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Installed explicitly, before requirements.txt, from PyTorch's CPU-only wheel index. Left to

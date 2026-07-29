@@ -35,12 +35,18 @@ _blocks_from_recognition_result's docstring).
 import argparse
 import json
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from backends.base import Region, TableStructure, Cell, OCRResult, row_boxes, col_boxes, regularized_cells
 from backends.client import SuryaClient, LABEL_MAP
+from backends.sharpness import laplacian_variance
+from backends.table_scale import safe_upscale
+from backends.table_split import body_center, center_split_index, split_cols, split_rows
+from backends.table_stitch import detect_label_chunk_index, parse_html_table, render_html, stitch_landscape, stitch_portrait
+from backends.tsr_dispatch import dispatch_tsr
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 
@@ -51,6 +57,20 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 RENDER_SCALE = 300 / 72
 
 DEFAULT_SERVER_URL = "http://peyk-vllm-surya:8000/v1"
+
+# Q1's blur-detection trigger (docs-personal/surya/improvement.md) — do not change without
+# re-deriving against that doc's evidence table.
+SHARPNESS_THRESHOLD_LAPLACIAN_VAR = 450
+
+# Shown between unstitched fragments when Q4's stitching can't confidently merge split
+# chunks — never fail the request, never merge positionally (see Global Constraints).
+CONTINUATION_MARKER = "<p>يتبع الجدول التالي من الجدول السابق</p>"
+
+# Much smaller than the general OCR concurrency: each dispatch_tsr call spawns a whole
+# `docker run --gpus all peyk-tsr:dev` that loads TableFormer onto the GPU from scratch, a far
+# heavier resource claim than the already-loaded-vLLM-server HTTP requests DEFAULT_OCR_CONCURRENCY
+# was tuned for.
+TSR_DISPATCH_SEMAPHORE = threading.Semaphore(2)
 
 
 def iter_page_images(doc_path: Path, tmp_dir: Path):
@@ -313,12 +333,95 @@ def _html_from_table_full_result(result) -> str:
     return getattr(result, "html", None) or getattr(result, "text", "") or ""
 
 
-def _process_crop_table_full(crop_path: Path, client: SuryaClient, output_dir: Path) -> None:
+def _predict_table_full_html(image, client: SuryaClient) -> str:
+    result = client.predict_table_full(image)
+    return _html_from_table_full_result(result)
+
+
+def _split_and_recognize(image, workdir: Path, crop_stem: str, client: SuryaClient) -> str:
+    """Q2-Q4: below-threshold correction path. Runs TSR (via peyk-tsr, a new capability — see
+    backends/tsr_dispatch.py), splits at the boundary nearest the geometric center, upscales
+    each chunk, recognizes each independently, and stitches. Returns HTML — either a clean
+    merged table, or (if stitching can't confidently merge) the chunks' own HTML concatenated
+    with CONTINUATION_MARKER between them, per this project's "never fail, never merge
+    positionally" rule."""
+    w, h = image.size
+
+    # dispatch_tsr needs a real file on disk (it copies it into peyk-tsr's input dir) — the
+    # caller already has `image` in memory from crop_path, so persist it once under workdir
+    # (a real subpath of the shared volume, required by dispatch_tsr's own docstring) before
+    # calling TSR.
+    scratch_image_path = workdir / f"{crop_stem}_tsr_input.png"
+    image.save(scratch_image_path)
+    # Held only around the dispatch itself — the recognition/stitching work below is HTTP
+    # against the shared vLLM server and must not be serialized behind the GPU-container cap.
+    with TSR_DISPATCH_SEMAPHORE:
+        aug = dispatch_tsr(scratch_image_path, workdir)
+
+    axis = "rows" if h >= w else "cols"
+    cells = aug.get("cells")
+
+    if axis == "rows":
+        rows = sorted(aug["rows"], key=lambda r: r["row"])
+        body = rows[1:]
+        boundary = center_split_index(body, body_center(body, axis_key="row"), axis_key="row", cells=cells)
+        chunk_images_and_indices = split_rows(image, rows, [boundary])
+        expected_counts = [len(indices) for _, indices in chunk_images_and_indices]
+    else:
+        cols = sorted(aug["cols"], key=lambda c: c["col"])
+        boundary = center_split_index(cols, w / 2, axis_key="col", cells=cells)
+        chunk_images_and_indices = split_cols(image, cols, [boundary])
+        expected_counts = [len(indices) for _, indices in chunk_images_and_indices]
+
+    scaled_images = [safe_upscale(chunk_image) for chunk_image, _ in chunk_images_and_indices]
+    chunk_htmls = [_predict_table_full_html(chunk_image, client) for chunk_image in scaled_images]
+    chunk_grids = [parse_html_table(html) for html in chunk_htmls]
+
+    if axis == "rows":
+        final_rows, warnings = stitch_portrait(chunk_grids, expected_counts)
+    else:
+        label_idx = detect_label_chunk_index(chunk_grids)
+        if label_idx is None:
+            ordered_grids, ordered_counts = chunk_grids, expected_counts
+        else:
+            order = [label_idx] + [i for i in range(len(chunk_grids)) if i != label_idx]
+            ordered_grids = [chunk_grids[i] for i in order]
+            ordered_counts = [expected_counts[i] for i in order]
+        final_rows, warnings = stitch_landscape(ordered_grids, ordered_counts)
+
+    if not final_rows:
+        # Stitching refused to merge — never fail, never guess: hand back the chunks' own HTML
+        # with a continuation marker between them instead.
+        print(f"[peyk-surya] {crop_stem}: split chunks could not be stitched ({'; '.join(warnings)}) — returning unstitched with continuation marker", file=sys.stderr)
+        return f"\n{CONTINUATION_MARKER}\n".join(chunk_htmls)
+
+    if warnings:
+        print(f"[peyk-surya] {crop_stem}: stitched with recoverable warnings: {'; '.join(warnings)}", file=sys.stderr)
+
+    return render_html(final_rows)
+
+
+def _process_crop_table_full(crop_path: Path, client: SuryaClient, output_dir: Path, workdir: Path) -> None:
     from PIL import Image
 
-    image = Image.open(crop_path)
-    table_html_result = client.predict_table_full(image)
-    html = _html_from_table_full_result(table_html_result)
+    image = Image.open(crop_path).convert("RGB")
+    lap_var = laplacian_variance(image)
+
+    if lap_var >= SHARPNESS_THRESHOLD_LAPLACIAN_VAR:
+        html = _predict_table_full_html(image, client)
+    else:
+        print(f"[peyk-surya] {crop_path.stem}: laplacian_var={lap_var:.1f} < {SHARPNESS_THRESHOLD_LAPLACIAN_VAR} — splitting", file=sys.stderr)
+        try:
+            html = _split_and_recognize(image, workdir, crop_path.stem, client)
+        except Exception as exc:
+            # The correction path is an optimization, never a precondition: dispatch_tsr can
+            # fail or time out, a header-only table has no body to split, center_split_index
+            # can refuse every boundary. Any of those must degrade to plain direct recognition
+            # rather than losing the table entirely (never fail — see table_stitch.py's
+            # docstring). The direct call below is deliberately NOT wrapped: if it fails too,
+            # run_stage_table_full's per-crop handler skips this one crop, as before.
+            print(f"[peyk-surya] {crop_path.stem}: split-and-recognize failed ({type(exc).__name__}: {exc}) — falling back to direct recognition", file=sys.stderr)
+            html = _predict_table_full_html(image, client)
 
     out_path = output_dir / f"{crop_path.stem}.json"
     out_path.write_text(json.dumps({"crop": crop_path.name, "model": "surya", "html": html}, indent=2, ensure_ascii=False))
@@ -332,12 +435,19 @@ def run_stage_table_full(client: SuryaClient, input_dir: Path, output_dir: Path,
         print("[peyk-surya] no crop images found in input", file=sys.stderr)
         return
 
+    # workdir for any crop that needs splitting: a real subpath of input_dir's parent, which
+    # is itself a subpath of the shared workdir volume this container was launched with
+    # --volumes-from ORCHESTRATOR_CONTAINER_NAME for (see backends/tsr_dispatch.py's
+    # docstring for why this must be host-visible, not a tempfile.TemporaryDirectory()).
+    workdir = input_dir.parent / "table_full_split_workdir"
+    workdir.mkdir(parents=True, exist_ok=True)
+
     # Each table's predict_full call is independent of every other table's — same batching
     # rationale as run_stage_ocr/run_stage_tsr. The 3-table celebrated end-to-end test
     # (implementation_plan.md Task 1.8) ran sequentially and took 21.78s doing so; this stands
     # to shrink meaningfully for documents with more tables once dispatched concurrently.
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {pool.submit(_process_crop_table_full, crop_path, client, output_dir): crop_path for crop_path in crops}
+        futures = {pool.submit(_process_crop_table_full, crop_path, client, output_dir, workdir): crop_path for crop_path in crops}
         for future in tqdm(as_completed(futures), total=len(futures), desc="[peyk-surya] table-full", unit="table", file=sys.stderr):
             crop_path = futures[future]
             try:

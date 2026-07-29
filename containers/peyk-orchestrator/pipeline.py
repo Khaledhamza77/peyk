@@ -375,7 +375,12 @@ def dispatch_table_full_batch(
     table_full_out = workdir / "table_full_out"
     backend = config.tsr.backend
     if backend == "surya":
-        extra_args, extra_docker_args = ["--stage", "table-full"], None
+        # peyk-surya's --stage table-full now decides internally (per crop) whether a table
+        # needs splitting, and if so calls peyk-tsr itself for TableFormer's row/column
+        # structure — needs the host docker socket to do that docker-in-docker dispatch. See
+        # docs-personal/surya/improvement.md's "Before integrating" section, decision 1.
+        extra_args = ["--stage", "table-full"]
+        extra_docker_args = ["-v", "/var/run/docker.sock:/var/run/docker.sock"]
     else:
         extra_args, extra_docker_args = ["--role", "table"], _vlm_credential_docker_args(backend)
     run_docker_stage(
