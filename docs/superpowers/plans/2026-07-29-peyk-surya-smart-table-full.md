@@ -647,10 +647,13 @@ def test_stitch_landscape_refuses_to_merge_on_unresolvable_row_count_mismatch():
 
 
 def test_stitch_landscape_recovers_one_unambiguous_empty_row():
+    # left/right must actually DISAGREE on row count for reconciliation to trigger at all —
+    # right has one genuine extra (fully empty) row, left doesn't.
     left = [["H1"], ["a"], ["b"]]
-    right = [["H2"], ["c"], [""]]  # one genuinely blank surplus row
+    right = [["H2"], ["c"], [""], ["d"]]
     final_rows, warnings = stitch_landscape([left, right], expected_col_counts=[1, 1])
-    assert final_rows == [["H1", "H2"], ["a", "c"]]
+    assert final_rows == [["H1", "H2"], ["a", "c"], ["b", "d"]]
+    assert any("dropped 1 fully-empty row" in w for w in warnings)
 
 
 def test_render_html_produces_a_table_with_matching_row_lengths():
