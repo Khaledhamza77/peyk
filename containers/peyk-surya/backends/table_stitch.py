@@ -138,10 +138,19 @@ def stitch_landscape(chunk_grids: list[list[list[str]]], expected_col_counts: li
             warnings.append(f"chunks still disagree on row count {row_counts} after reconciliation attempt — alignment by row index is unsafe, not merging")
             return [], warnings
 
+    # Column-ragged chunks are never merged positionally: one short row shifts every later
+    # chunk's values under the wrong header labels for that row, silently. Same bail-out as the
+    # row-count mismatch above — the caller falls back to unstitched chunks + a continuation
+    # marker. No padding, no guessing (wrong data is worse than missing data here).
+    ragged = False
     for i, (grid, expected_count) in enumerate(zip(chunk_grids, expected_col_counts)):
         for r_idx, row in enumerate(grid):
             if len(row) != expected_count:
                 warnings.append(f"chunk {i} row {r_idx}: expected {expected_count} cols, got {len(row)} ({row})")
+                ragged = True
+    if ragged:
+        warnings.append("column counts are ragged — positional merge would misalign values under the wrong headers, not merging")
+        return [], warnings
 
     final_rows = [sum((grid[r_idx] for grid in chunk_grids), []) for r_idx in range(row_counts[0])]
     return final_rows, warnings

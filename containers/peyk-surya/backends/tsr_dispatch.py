@@ -31,17 +31,30 @@ def dispatch_tsr(image_path: Path, workdir: Path) -> dict:
     directory tree as this container's own --input/--output arguments) — not an arbitrary
     tempfile.TemporaryDirectory() path, which would only exist inside peyk-surya's own
     filesystem and be invisible to the peyk-tsr sibling this function launches."""
-    in_dir = workdir / "tsr_dispatch_in"
-    out_dir = workdir / "tsr_dispatch_out"
+    # Per-crop unique directory names, not fixed ones: run.py dispatches crops through a
+    # ThreadPoolExecutor (DEFAULT_OCR_CONCURRENCY=8) all sharing one workdir, so fixed names
+    # would race — mkdir collisions, and one call's rmtree deleting another's in-flight files.
+    # image_path.stem is already unique per crop (run.py's scratch_image_path uses it the same
+    # way). exist_ok=True as defense in depth.
+    in_dir = workdir / f"tsr_dispatch_in_{image_path.stem}"
+    out_dir = workdir / f"tsr_dispatch_out_{image_path.stem}"
     for d in (in_dir, out_dir):
         shutil.rmtree(d, ignore_errors=True)
-        d.mkdir(parents=True)
+        d.mkdir(parents=True, exist_ok=True)
 
     shutil.copy(image_path, in_dir / image_path.name)
 
+    # Deterministic per-crop container name + a force-remove sweep before launching, mirroring
+    # peyk-orchestrator/stages.py's run_docker_stage: docker-outside-of-docker means killing
+    # THIS container does NOT kill the sibling it spawned via the host socket, so an orphan can
+    # survive and fight the next run for GPU memory. A fixed name means any such orphan is
+    # always found and removed first. Errors ignored — the common case is nothing to remove.
+    container_name = f"peyk-tsr-dispatch-{image_path.stem}"
+    subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, text=True)
+
     subprocess.run(
         [
-            "docker", "run", "--rm", "--gpus", "all",
+            "docker", "run", "--rm", "--name", container_name, "--gpus", "all",
             "--network", PEYK_NETWORK,
             "--volumes-from", ORCHESTRATOR_CONTAINER_NAME,
             TSR_IMAGE,
@@ -50,6 +63,10 @@ def dispatch_tsr(image_path: Path, workdir: Path) -> dict:
             "--output", str(out_dir),
         ],
         check=True,
+        # Bounded so a hung sibling can't stall the whole batch forever. Generous: one crop's
+        # TableFormer inference including cold model load. On expiry the TimeoutExpired
+        # propagates and run.py's caller falls back to direct recognition.
+        timeout=600,
     )
 
     aug_path = out_dir / f"{image_path.stem}_aug.json"

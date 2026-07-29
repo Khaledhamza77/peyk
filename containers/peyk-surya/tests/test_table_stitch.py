@@ -57,6 +57,17 @@ def test_stitch_landscape_refuses_to_merge_on_unresolvable_row_count_mismatch():
     assert any("disagree on row count" in w for w in warnings)
 
 
+def test_stitch_landscape_refuses_to_merge_when_a_row_has_the_wrong_column_count():
+    # Row counts agree, but chunk 0's second row lost a cell. Merging positionally would slide
+    # the right chunk's values one column left for that row only — wrong data under the wrong
+    # header. Bail entirely instead (caller falls back to unstitched + continuation marker).
+    left = [["H1", "H2"], ["a"], ["b", "2"]]
+    right = [["H3", "H4"], ["c", "3"], ["d", "4"]]
+    final_rows, warnings = stitch_landscape([left, right], expected_col_counts=[2, 2])
+    assert final_rows == []
+    assert any("expected 2 cols, got 1" in w for w in warnings)
+
+
 def test_stitch_landscape_recovers_one_unambiguous_empty_row():
     # left/right must actually DISAGREE on row count for reconciliation to trigger at all —
     # right has one genuine extra (fully empty) row, left doesn't.

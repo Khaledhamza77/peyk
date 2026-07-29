@@ -35,6 +35,7 @@ _blocks_from_recognition_result's docstring).
 import argparse
 import json
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -43,7 +44,7 @@ from backends.base import Region, TableStructure, Cell, OCRResult, row_boxes, co
 from backends.client import SuryaClient, LABEL_MAP
 from backends.sharpness import laplacian_variance
 from backends.table_scale import safe_upscale
-from backends.table_split import body_center, center_split_index, max_per_chunk_to_boundaries, split_cols, split_rows
+from backends.table_split import body_center, center_split_index, split_cols, split_rows
 from backends.table_stitch import detect_label_chunk_index, parse_html_table, render_html, stitch_landscape, stitch_portrait
 from backends.tsr_dispatch import dispatch_tsr
 
@@ -64,6 +65,12 @@ SHARPNESS_THRESHOLD_LAPLACIAN_VAR = 450
 # Shown between unstitched fragments when Q4's stitching can't confidently merge split
 # chunks — never fail the request, never merge positionally (see Global Constraints).
 CONTINUATION_MARKER = "<p>يتبع الجدول التالي من الجدول السابق</p>"
+
+# Much smaller than the general OCR concurrency: each dispatch_tsr call spawns a whole
+# `docker run --gpus all peyk-tsr:dev` that loads TableFormer onto the GPU from scratch, a far
+# heavier resource claim than the already-loaded-vLLM-server HTTP requests DEFAULT_OCR_CONCURRENCY
+# was tuned for.
+TSR_DISPATCH_SEMAPHORE = threading.Semaphore(2)
 
 
 def iter_page_images(doc_path: Path, tmp_dir: Path):
@@ -346,7 +353,10 @@ def _split_and_recognize(image, workdir: Path, crop_stem: str, client: SuryaClie
     # calling TSR.
     scratch_image_path = workdir / f"{crop_stem}_tsr_input.png"
     image.save(scratch_image_path)
-    aug = dispatch_tsr(scratch_image_path, workdir)
+    # Held only around the dispatch itself — the recognition/stitching work below is HTTP
+    # against the shared vLLM server and must not be serialized behind the GPU-container cap.
+    with TSR_DISPATCH_SEMAPHORE:
+        aug = dispatch_tsr(scratch_image_path, workdir)
 
     axis = "rows" if h >= w else "cols"
     cells = aug.get("cells")
@@ -401,7 +411,17 @@ def _process_crop_table_full(crop_path: Path, client: SuryaClient, output_dir: P
         html = _predict_table_full_html(image, client)
     else:
         print(f"[peyk-surya] {crop_path.stem}: laplacian_var={lap_var:.1f} < {SHARPNESS_THRESHOLD_LAPLACIAN_VAR} — splitting", file=sys.stderr)
-        html = _split_and_recognize(image, workdir, crop_path.stem, client)
+        try:
+            html = _split_and_recognize(image, workdir, crop_path.stem, client)
+        except Exception as exc:
+            # The correction path is an optimization, never a precondition: dispatch_tsr can
+            # fail or time out, a header-only table has no body to split, center_split_index
+            # can refuse every boundary. Any of those must degrade to plain direct recognition
+            # rather than losing the table entirely (never fail — see table_stitch.py's
+            # docstring). The direct call below is deliberately NOT wrapped: if it fails too,
+            # run_stage_table_full's per-crop handler skips this one crop, as before.
+            print(f"[peyk-surya] {crop_path.stem}: split-and-recognize failed ({type(exc).__name__}: {exc}) — falling back to direct recognition", file=sys.stderr)
+            html = _predict_table_full_html(image, client)
 
     out_path = output_dir / f"{crop_path.stem}.json"
     out_path.write_text(json.dumps({"crop": crop_path.name, "model": "surya", "html": html}, indent=2, ensure_ascii=False))
