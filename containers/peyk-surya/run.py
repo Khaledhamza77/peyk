@@ -34,7 +34,6 @@ _blocks_from_recognition_result's docstring).
 """
 import argparse
 import json
-import math
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
