@@ -88,6 +88,12 @@ def stitch_portrait(chunk_grids: list[list[list[str]]], expected_row_counts: lis
     ncols = len(header)
     final_rows = [header]
 
+    # Column-ragged chunks are never merged positionally: one row with the wrong cell count
+    # shifts every value in that row under the wrong header column, silently. Same bail-out as
+    # stitch_landscape's — the caller falls back to unstitched chunks + a continuation marker.
+    # No padding, no guessing (wrong data is worse than missing data here).
+    ragged = False
+
     for i, (grid, expected_count) in enumerate(zip(chunk_grids, expected_row_counts)):
         body = grid[1:] if grid else []
         if len(body) != expected_count:
@@ -100,7 +106,12 @@ def stitch_portrait(chunk_grids: list[list[list[str]]], expected_row_counts: lis
         for r_idx, row in enumerate(body):
             if len(row) != ncols:
                 warnings.append(f"chunk {i} row {r_idx}: expected {ncols} cols, got {len(row)} ({row})")
+                ragged = True
         final_rows.extend(body)
+
+    if ragged:
+        warnings.append("column counts are ragged — positional merge would misalign values under the wrong headers, not merging")
+        return [], warnings
 
     return final_rows, warnings
 

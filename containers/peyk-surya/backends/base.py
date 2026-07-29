@@ -137,7 +137,9 @@ def col_boxes(structure: TableStructure, image_width: float, image_height: float
 
 def regularized_cells(structure: TableStructure, rows: list[RowBox], cols: list[ColBox]) -> list[dict]:
     """Ported verbatim from peyk-tsr/backends/base.py — row-band x column-band intersection,
-    replacing each cell's raw model bbox."""
+    replacing each cell's raw model bbox. row_span/col_span carried into the output so a
+    consumer of just this "_aug.json" file can tell whether a cell is merged (e.g. to avoid
+    cutting a table-split boundary through it) without also loading the raw structure JSON."""
     row_bbox_by_idx = {r.row: r.bbox for r in rows}
     col_bbox_by_idx = {c.col: c.bbox for c in cols}
 
@@ -149,5 +151,11 @@ def regularized_cells(structure: TableStructure, rows: list[RowBox], cols: list[
         xs = [col_bbox_by_idx[c][i] for c in col_range if c in col_bbox_by_idx for i in (0, 2)]
         if not ys or not xs:
             continue
-        result.append({"row": cell.row, "col": cell.col, "bbox": [min(xs), min(ys), max(xs), max(ys)]})
+        result.append({
+            "row": cell.row,
+            "col": cell.col,
+            "row_span": cell.row_span,
+            "col_span": cell.col_span,
+            "bbox": [min(xs), min(ys), max(xs), max(ys)],
+        })
     return result

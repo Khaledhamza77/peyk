@@ -100,6 +100,22 @@ def test_split_rows_produces_one_image_per_chunk_with_full_width():
         assert chunk_image.width == 1000
 
 
+def test_split_rows_first_chunk_does_not_duplicate_the_header_band():
+    # compute_chunks returns span0=0 (absolute image top) for the first chunk — correct for
+    # split_cols (no header), but for split_rows that's the header's own region, which is
+    # already pasted separately. A single chunk (no internal boundary) must capture the header
+    # once and the body once: total height == original image height, not header+full-image.
+    h = 500
+    image = Image.new("RGB", (1000, h), "white")
+    rows = [{"row": 0, "bbox": [0, 0, 1000, 50]}] + [
+        {"row": i, "bbox": [0, 50 + (i - 1) * 90, 1000, 50 + i * 90]} for i in range(1, 6)
+    ]
+    chunks = split_rows(image, rows, [])
+    assert len(chunks) == 1
+    combined, _ = chunks[0]
+    assert combined.height == h
+
+
 def test_split_cols_left_to_right_pixel_order():
     image = Image.new("RGB", (1000, 200), "white")
     cols = [{"col": i, "bbox": [i * 200, 0, (i + 1) * 200, 200]} for i in range(5)]

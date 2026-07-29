@@ -41,6 +41,16 @@ def test_stitch_portrait_does_not_drop_a_row_of_dashes():
     assert any("expected 2 body rows, got 3" in w for w in warnings)
 
 
+def test_stitch_portrait_refuses_to_merge_when_a_row_has_the_wrong_column_count():
+    # Row counts match expected, but one body row lost a cell. Merging positionally would slide
+    # that row's values one column left under the wrong header — wrong data under the wrong
+    # header. Bail entirely instead (caller falls back to unstitched + continuation marker).
+    chunk0 = [["H1", "H2"], ["a", "1"], ["b"]]
+    final_rows, warnings = stitch_portrait([chunk0], expected_row_counts=[2])
+    assert final_rows == []
+    assert any("expected 2 cols, got 1" in w for w in warnings)
+
+
 def test_stitch_landscape_joins_by_row_index_in_the_given_chunk_order():
     left = [["H1", "H2"], ["a", "1"]]
     right = [["H3", "H4"], ["b", "2"]]

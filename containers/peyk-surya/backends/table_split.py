@@ -139,8 +139,15 @@ def split_rows(image: Image.Image, rows: list[dict], boundaries: list[int]) -> l
     chunks = compute_chunks(body, boundaries, axis_key="row")
 
     result = []
-    for y0, y1, row_indices in chunks:
-        body_crop = image.crop((0, y0, w, y1 if y1 is not None else h))
+    for gi, (y0, y1, row_indices) in enumerate(chunks):
+        # compute_chunks returns span0=0 (absolute image top) for the first chunk — correct
+        # for split_cols (no header, chunk 0 legitimately starts at the image edge), but wrong
+        # here: y=0 is the header band's own region, already pasted separately above. Without
+        # this override, chunk 0's body_crop restarts at the image top and the header band
+        # ends up rendered twice (once as header_crop, once embedded in body_crop) — confirmed
+        # via a real crop (bdc_sample_true_scanned__r18), not caught by earlier synthetic tests.
+        crop_y0 = header_bottom if gi == 0 else y0
+        body_crop = image.crop((0, crop_y0, w, y1 if y1 is not None else h))
         combined = Image.new("RGB", (w, header_crop.height + body_crop.height), "white")
         combined.paste(header_crop, (0, 0))
         combined.paste(body_crop, (0, header_crop.height))
