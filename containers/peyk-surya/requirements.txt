@@ -20,3 +20,6 @@ markdownify>=0.13
 # Already a transitive dependency of surya-ocr (its own settings.py has a DISABLE_TQDM flag),
 # but declared explicitly since run.py imports it directly for --stage ocr's progress bar.
 tqdm>=4.66
+# Used by backends/sharpness.py's laplacian_variance (Q1's blur-detection trigger, see
+# docs-personal/surya/improvement.md) — no other dependency here already pulls it in.
+numpy>=1.26,<2.0
