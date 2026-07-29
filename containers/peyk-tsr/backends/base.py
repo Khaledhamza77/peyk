@@ -121,7 +121,12 @@ def regularized_cells(structure: TableStructure, rows: list[RowBox], cols: list[
     row-height/column-width signals, rather than trusting any individual cell detection.
     Spanning cells union the row/column bands they cover. Used for OCR crop regularization
     (pipeline.py) rather than replacing the raw cells list wholesale, since markdown assembly
-    still needs the model's own row/col indices — this only replaces the bbox."""
+    still needs the model's own row/col indices — this only replaces the bbox.
+
+    row_span/col_span are carried through into the output (previously computed here to decide
+    which row/column bands to union, then silently dropped) so a consumer of just the
+    "_aug.json" file — without also loading the raw per-crop structure JSON — can still tell
+    whether a cell is merged, e.g. to avoid cutting a split boundary through it."""
     row_bbox_by_idx = {r.row: r.bbox for r in rows}
     col_bbox_by_idx = {c.col: c.bbox for c in cols}
 
@@ -133,7 +138,13 @@ def regularized_cells(structure: TableStructure, rows: list[RowBox], cols: list[
         xs = [col_bbox_by_idx[c][i] for c in col_range if c in col_bbox_by_idx for i in (0, 2)]
         if not ys or not xs:
             continue
-        result.append({"row": cell.row, "col": cell.col, "bbox": [min(xs), min(ys), max(xs), max(ys)]})
+        result.append({
+            "row": cell.row,
+            "col": cell.col,
+            "row_span": cell.row_span,
+            "col_span": cell.col_span,
+            "bbox": [min(xs), min(ys), max(xs), max(ys)],
+        })
     return result
 
 
