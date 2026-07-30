@@ -2,7 +2,7 @@
 configured — there's no "stub" concept anymore (that was only ever a placeholder for a stage
 whose container hadn't been built yet; all seven now exist)."""
 import functools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -97,6 +97,23 @@ def vlm_provider(model: str) -> str:
 
 
 @dataclass
+class SmartSplitConfig:
+    """Q1-Q4 correction algorithm for Surya's full-table predict_full path
+    (docs-personal/surya/improvement.md) — split/upscale/stitch low-sharpness table crops
+    instead of dispatching them unsplit. Only takes effect when full_table_backend(config)
+    resolves to "surya"; parsed unconditionally regardless of tsr/cell_ocr so its defaults are
+    always available, but silently unused otherwise. Field defaults match the algorithm's own
+    documented defaults (improvement.md's Parameters table), i.e. an absent
+    `surya_smart_table_split:` section in the yaml reproduces today's always-on behavior."""
+
+    enabled: bool = True
+    sharpness_threshold_laplacian_var: float = 450
+    pixel_safety_margin: float = 0.97
+    max_upscale_cap: float = 2.0
+    min_scale: float = 1.0
+
+
+@dataclass
 class StageConfig:
     image: str | None = None
     backend: str | None = None  # the chosen model's name (yaml field is called `model`)
@@ -119,6 +136,7 @@ class PipelineConfig:
     # Task 1.5's open item. Not a "stub" — this is a genuinely optional override, not a
     # placeholder for an unbuilt container.
     cell_ocr: StageConfig | None = None
+    surya_smart_table_split: SmartSplitConfig = field(default_factory=SmartSplitConfig)
     born_digital_min_chars: int = 20
     force_scanned: bool = False
     # None (default): the normal per-region layout->tsr->ocr->figures->assembly path. Set to
@@ -213,6 +231,19 @@ def _fullpage_stage(raw: dict | None) -> StageConfig | None:
     if stage.image is None:
         stage.image = "peyk-surya:dev" if stage.backend == "surya" else DEFAULT_VLM_IMAGE
     return stage
+
+
+def _smart_split_config(raw: dict) -> SmartSplitConfig:
+    defaults = SmartSplitConfig()
+    return SmartSplitConfig(
+        enabled=raw.get("enabled", defaults.enabled),
+        sharpness_threshold_laplacian_var=raw.get(
+            "sharpness_threshold_laplacian_var", defaults.sharpness_threshold_laplacian_var
+        ),
+        pixel_safety_margin=raw.get("pixel_safety_margin", defaults.pixel_safety_margin),
+        max_upscale_cap=raw.get("max_upscale_cap", defaults.max_upscale_cap),
+        min_scale=raw.get("min_scale", defaults.min_scale),
+    )
 
 
 def _dcr_stage(raw: dict) -> StageConfig:
@@ -321,6 +352,7 @@ def load_config(path: Path) -> PipelineConfig:
         tsr=_tsr_stage(raw["tsr"]),
         figures=_figures_stage(raw["figures"]),
         cell_ocr=_ocr_stage(cell_ocr_raw) if cell_ocr_raw else None,
+        surya_smart_table_split=_smart_split_config(raw.get("surya_smart_table_split", {})),
         born_digital_min_chars=raw.get("born_digital", {}).get("min_chars_per_page", 20),
         force_scanned=raw.get("born_digital", {}).get("force_scanned", False),
         fullpage=_fullpage_stage(raw.get("fullpage")),

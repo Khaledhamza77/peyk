@@ -380,6 +380,17 @@ def dispatch_table_full_batch(
         # structure — needs the host docker socket to do that docker-in-docker dispatch. See
         # docs-personal/surya/improvement.md's "Before integrating" section, decision 1.
         extra_args = ["--stage", "table-full"]
+        smart_split = config.surya_smart_table_split
+        if smart_split.enabled:
+            extra_args += [
+                "--smart-split",
+                "--sharpness-threshold", str(smart_split.sharpness_threshold_laplacian_var),
+                "--pixel-safety-margin", str(smart_split.pixel_safety_margin),
+                "--max-upscale-cap", str(smart_split.max_upscale_cap),
+                "--min-scale", str(smart_split.min_scale),
+            ]
+        else:
+            extra_args += ["--no-smart-split"]
         extra_docker_args = ["-v", "/var/run/docker.sock:/var/run/docker.sock"]
     else:
         extra_args, extra_docker_args = ["--role", "table"], _vlm_credential_docker_args(backend)

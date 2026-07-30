@@ -43,7 +43,7 @@ from pathlib import Path
 from backends.base import Region, TableStructure, Cell, OCRResult, row_boxes, col_boxes, regularized_cells
 from backends.client import SuryaClient, LABEL_MAP
 from backends.sharpness import laplacian_variance
-from backends.table_scale import safe_upscale
+from backends.table_scale import MAX_UPSCALE_CAP, MIN_SCALE, PIXEL_SAFETY_MARGIN, safe_upscale
 from backends.table_split import body_center, center_split_index, split_cols, split_rows
 from backends.table_stitch import detect_label_chunk_index, parse_html_table, render_html, stitch_landscape, stitch_portrait
 from backends.tsr_dispatch import dispatch_tsr
@@ -338,7 +338,10 @@ def _predict_table_full_html(image, client: SuryaClient) -> str:
     return _html_from_table_full_result(result)
 
 
-def _split_and_recognize(image, workdir: Path, crop_stem: str, client: SuryaClient) -> str:
+def _split_and_recognize(
+    image, workdir: Path, crop_stem: str, client: SuryaClient,
+    max_upscale_cap: float, min_scale: float, pixel_safety_margin: float,
+) -> str:
     """Q2-Q4: below-threshold correction path. Runs TSR (via peyk-tsr, a new capability — see
     backends/tsr_dispatch.py), splits at the boundary nearest the geometric center, upscales
     each chunk, recognizes each independently, and stitches. Returns HTML — either a clean
@@ -373,7 +376,10 @@ def _split_and_recognize(image, workdir: Path, crop_stem: str, client: SuryaClie
         chunk_images_and_indices = split_cols(image, cols, [boundary])
         expected_counts = [len(indices) for _, indices in chunk_images_and_indices]
 
-    scaled_images = [safe_upscale(chunk_image) for chunk_image, _ in chunk_images_and_indices]
+    scaled_images = [
+        safe_upscale(chunk_image, max_upscale_cap=max_upscale_cap, min_scale=min_scale, pixel_safety_margin=pixel_safety_margin)
+        for chunk_image, _ in chunk_images_and_indices
+    ]
     chunk_htmls = [_predict_table_full_html(chunk_image, client) for chunk_image in scaled_images]
     chunk_grids = [parse_html_table(html) for html in chunk_htmls]
 
@@ -401,18 +407,29 @@ def _split_and_recognize(image, workdir: Path, crop_stem: str, client: SuryaClie
     return render_html(final_rows)
 
 
-def _process_crop_table_full(crop_path: Path, client: SuryaClient, output_dir: Path, workdir: Path) -> None:
+def _process_crop_table_full(
+    crop_path: Path, client: SuryaClient, output_dir: Path, workdir: Path,
+    smart_split: bool, sharpness_threshold: float,
+    max_upscale_cap: float, min_scale: float, pixel_safety_margin: float,
+) -> None:
     from PIL import Image
 
     image = Image.open(crop_path).convert("RGB")
+
+    if not smart_split:
+        html = _predict_table_full_html(image, client)
+        out_path = output_dir / f"{crop_path.stem}.json"
+        out_path.write_text(json.dumps({"crop": crop_path.name, "model": "surya", "html": html}, indent=2, ensure_ascii=False))
+        return
+
     lap_var = laplacian_variance(image)
 
-    if lap_var >= SHARPNESS_THRESHOLD_LAPLACIAN_VAR:
+    if lap_var >= sharpness_threshold:
         html = _predict_table_full_html(image, client)
     else:
-        print(f"[peyk-surya] {crop_path.stem}: laplacian_var={lap_var:.1f} < {SHARPNESS_THRESHOLD_LAPLACIAN_VAR} — splitting", file=sys.stderr)
+        print(f"[peyk-surya] {crop_path.stem}: laplacian_var={lap_var:.1f} < {sharpness_threshold} — splitting", file=sys.stderr)
         try:
-            html = _split_and_recognize(image, workdir, crop_path.stem, client)
+            html = _split_and_recognize(image, workdir, crop_path.stem, client, max_upscale_cap, min_scale, pixel_safety_margin)
         except Exception as exc:
             # The correction path is an optimization, never a precondition: dispatch_tsr can
             # fail or time out, a header-only table has no body to split, center_split_index
@@ -427,7 +444,11 @@ def _process_crop_table_full(crop_path: Path, client: SuryaClient, output_dir: P
     out_path.write_text(json.dumps({"crop": crop_path.name, "model": "surya", "html": html}, indent=2, ensure_ascii=False))
 
 
-def run_stage_table_full(client: SuryaClient, input_dir: Path, output_dir: Path, concurrency: int) -> None:
+def run_stage_table_full(
+    client: SuryaClient, input_dir: Path, output_dir: Path, concurrency: int,
+    smart_split: bool = True, sharpness_threshold: float = SHARPNESS_THRESHOLD_LAPLACIAN_VAR,
+    max_upscale_cap: float = MAX_UPSCALE_CAP, min_scale: float = MIN_SCALE, pixel_safety_margin: float = PIXEL_SAFETY_MARGIN,
+) -> None:
     from tqdm import tqdm
 
     crops = sorted(p for p in input_dir.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
@@ -447,7 +468,13 @@ def run_stage_table_full(client: SuryaClient, input_dir: Path, output_dir: Path,
     # (implementation_plan.md Task 1.8) ran sequentially and took 21.78s doing so; this stands
     # to shrink meaningfully for documents with more tables once dispatched concurrently.
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {pool.submit(_process_crop_table_full, crop_path, client, output_dir, workdir): crop_path for crop_path in crops}
+        futures = {
+            pool.submit(
+                _process_crop_table_full, crop_path, client, output_dir, workdir,
+                smart_split, sharpness_threshold, max_upscale_cap, min_scale, pixel_safety_margin,
+            ): crop_path
+            for crop_path in crops
+        }
         for future in tqdm(as_completed(futures), total=len(futures), desc="[peyk-surya] table-full", unit="table", file=sys.stderr):
             crop_path = futures[future]
             try:
@@ -659,6 +686,29 @@ def main() -> int:
         "--concurrency", type=int, default=DEFAULT_OCR_CONCURRENCY,
         help=f"Max in-flight requests to the vLLM server at once — applies to every --stage (layout/tsr/ocr/table-full) and to --mode fullpage (default: {DEFAULT_OCR_CONCURRENCY}).",
     )
+    parser.add_argument(
+        "--smart-split", action=argparse.BooleanOptionalAction, default=True,
+        help="--stage table-full only: correct low-sharpness table crops via split/upscale/stitch "
+             "(docs-personal/surya/improvement.md) before predict_full. --no-smart-split always "
+             "calls predict_full directly, never measuring sharpness or splitting. Set by "
+             "peyk-orchestrator from config.yaml's surya_smart_table_split.enabled.",
+    )
+    parser.add_argument(
+        "--sharpness-threshold", type=float, default=SHARPNESS_THRESHOLD_LAPLACIAN_VAR,
+        help=f"--stage table-full only: laplacian_var below this triggers the split correction (default: {SHARPNESS_THRESHOLD_LAPLACIAN_VAR}).",
+    )
+    parser.add_argument(
+        "--pixel-safety-margin", type=float, default=PIXEL_SAFETY_MARGIN,
+        help=f"--stage table-full only: fraction of peyk-vllm-surya's max_pixels actually targeted when upscaling a split chunk (default: {PIXEL_SAFETY_MARGIN}).",
+    )
+    parser.add_argument(
+        "--max-upscale-cap", type=float, default=MAX_UPSCALE_CAP,
+        help=f"--stage table-full only: ceiling on upscale factor applied to a split chunk (default: {MAX_UPSCALE_CAP}).",
+    )
+    parser.add_argument(
+        "--min-scale", type=float, default=MIN_SCALE,
+        help=f"--stage table-full only: floor on scale factor applied to a split chunk; 1.0 = never downscale (default: {MIN_SCALE}).",
+    )
     args = parser.parse_args()
 
     if args.mode == "stage" and args.stage is None:
@@ -690,7 +740,12 @@ def main() -> int:
             elif args.stage == "ocr":
                 run_stage_ocr(client, args.input, args.output, args.concurrency)
             elif args.stage == "table-full":
-                run_stage_table_full(client, args.input, args.output, args.concurrency)
+                run_stage_table_full(
+                    client, args.input, args.output, args.concurrency,
+                    smart_split=args.smart_split, sharpness_threshold=args.sharpness_threshold,
+                    max_upscale_cap=args.max_upscale_cap, min_scale=args.min_scale,
+                    pixel_safety_margin=args.pixel_safety_margin,
+                )
         else:
             run_fullpage(client, args.input, args.output, tmp_dir, args.concurrency)
 

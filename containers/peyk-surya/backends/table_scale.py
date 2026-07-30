@@ -14,11 +14,16 @@ MAX_UPSCALE_CAP = 2.0
 MIN_SCALE = 1.0
 
 
-def safe_upscale(image: Image.Image, max_upscale_cap: float = MAX_UPSCALE_CAP) -> Image.Image:
+def safe_upscale(
+    image: Image.Image,
+    max_upscale_cap: float = MAX_UPSCALE_CAP,
+    min_scale: float = MIN_SCALE,
+    pixel_safety_margin: float = PIXEL_SAFETY_MARGIN,
+) -> Image.Image:
     w, h = image.size
-    scale_cap = math.sqrt(MAX_PIXELS * PIXEL_SAFETY_MARGIN / (w * h))
+    scale_cap = math.sqrt(MAX_PIXELS * pixel_safety_margin / (w * h))
     scale = min(scale_cap, max_upscale_cap)
-    if scale <= MIN_SCALE:
+    if scale <= min_scale:
         return image
 
     new_size = (round(w * scale), round(h * scale))
