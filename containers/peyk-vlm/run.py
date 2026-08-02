@@ -20,6 +20,7 @@ exiting.
 """
 import argparse
 import json
+import random
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -40,10 +41,48 @@ ROLES = ["ocr", "figure", "table", "fullpage"]
 
 DEFAULT_CONCURRENCY = 8
 
+# Rate-limit responses look different per provider (Vertex's google-genai raises a ClientError
+# with a numeric .code / "RESOURCE_EXHAUSTED" in its message, Bedrock's boto3 raises a
+# ClientError with response['Error']['Code'] == "ThrottlingException", the openai SDK used for
+# Vertex MaaS raises RateLimitError with .status_code) — none share a common exception base
+# class, so this matches on the shared shape (an HTTP 429, or one of the provider-specific
+# strings each surfaces) rather than importing all three SDKs' exception types here.
+_RATE_LIMIT_MARKERS = ("429", "RESOURCE_EXHAUSTED", "ThrottlingException", "TooManyRequests", "rate limit")
+MAX_RETRIES = 5
+RETRY_BASE_DELAY = 2.0
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    if getattr(exc, "status_code", None) == 429 or getattr(exc, "code", None) == 429:
+        return True
+    text = str(exc)
+    return any(marker in text for marker in _RATE_LIMIT_MARKERS)
+
+
+def predict_with_retry(backend, image_path: Path, role: str):
+    """Retries only on rate-limit-shaped failures, with exponential backoff + jitter (the
+    jitter spreads retries from concurrent workers apart instead of having them all wake up
+    and re-hit the API at the same instant). Any other exception (bad image, auth failure, ...)
+    propagates immediately — retrying those would just burn the same number of calls for the
+    same guaranteed failure."""
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            return backend.predict(image_path, role)
+        except Exception as exc:
+            if attempt == MAX_RETRIES or not _is_rate_limited(exc):
+                raise
+            delay = RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, RETRY_BASE_DELAY)
+            print(
+                f"[peyk-vlm] {image_path.name} rate-limited (attempt {attempt + 1}/{MAX_RETRIES}), "
+                f"retrying in {delay:.1f}s...",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+
 
 def process_image(image_path: Path, backend, model: str, role: str, output_dir: Path) -> None:
     print(f"[peyk-vlm] processing {image_path.name} (role={role})...", file=sys.stderr)
-    result = backend.predict(image_path, role)
+    result = predict_with_retry(backend, image_path, role)
     out_path = output_dir / f"{image_path.stem}.json"
     out_path.write_text(
         json.dumps({"crop": image_path.name, "model": model, "role": role, **result.to_dict()}, indent=2, ensure_ascii=False)
