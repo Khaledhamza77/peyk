@@ -87,7 +87,7 @@ def _run_fullpage(config, args: argparse.Namespace) -> int:
         model=model,
         input_dir=fullpage_in,
         output_dir=fullpage_out,
-        extra_args=["--role", "fullpage"],
+        extra_args=["--stage", "vlm", "--role", "fullpage"],
         extra_docker_args=_vlm_credential_docker_args(model),
         gpu=False,
     )

@@ -61,23 +61,24 @@ DEFAULT_VLLM_SERVER_URL = "http://peyk-vllm-paddleocr:8118/v1"
 # Same reasoning, for peyk-surya against peyk-vllm-surya (see that container's start.sh/README).
 DEFAULT_SURYA_SERVER_URL = "http://peyk-vllm-surya:8000/v1"
 
-# peyk-vlm is one image serving many models via --model (see containers/peyk-vlm/backends/
-# registry.py) — unlike OCR_MODEL_IMAGES/TSR_MODEL_IMAGES's per-model dict, any model peyk-vlm
-# itself reports supporting (see _vlm_models below) derives this single image. Used by
+# peyk-vlm's vlm stage (see containers/peyk/stages/vlm/backends/registry.py) serves many
+# models via --model — unlike OCR_MODEL_IMAGES/TSR_MODEL_IMAGES's per-model dict, any model it
+# itself reports supporting (see _vlm_models below) derives this single image (peyk:dev, the
+# merged worker — --stage vlm picks this role out of it, see pipeline.py/run.py). Used by
 # ocr/cell_ocr, tsr (the full-table combination only), figures, and fullpage alike.
-DEFAULT_VLM_IMAGE = "peyk-vlm:dev"
+DEFAULT_VLM_IMAGE = "peyk:dev"
 
-# peyk-dcr has no model concept at all (one approach, pure pypdfium2 extraction) — its image is
-# always this, never configurable via yaml. No job's image should ever need to appear in
-# example.yaml; every one is either derived from model (above, and OCR_MODEL_IMAGES/
+# peyk-dcr's dcr stage has no model concept at all (one approach, pure pypdfium2 extraction) —
+# its image is always this, never configurable via yaml. No job's image should ever need to
+# appear in example.yaml; every one is either derived from model (above, and OCR_MODEL_IMAGES/
 # LAYOUT_MODEL_IMAGES/TSR_MODEL_IMAGES) or, for dcr, simply fixed.
-DEFAULT_DCR_IMAGE = "peyk-dcr:dev"
+DEFAULT_DCR_IMAGE = "peyk:dev"
 
 
 @functools.lru_cache(maxsize=1)
 def _vlm_models() -> dict[str, str]:
     """{model_key: provider} for every model peyk-vlm actually supports, queried directly from
-    the container (`docker run --rm peyk-vlm:dev --list-models`) rather than assumed from a
+    the container (`docker run --rm peyk:dev --stage vlm --list-models`) rather than assumed from a
     naming convention (e.g. "does this string start with bedrock-/vertex-?") — a convention
     that could silently drift out of sync with the real registry, and offered no way to
     validate a typo'd model name until peyk-vlm's own argparse rejected it at dispatch time.

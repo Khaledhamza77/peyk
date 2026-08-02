@@ -57,14 +57,14 @@ HOTSTORAGE="${PEYK_HOTSTORAGE:-$SCRIPT_DIR/../../hotstorage}"
 CONFIG_FILE="${PEYK_CONFIG:-$SCRIPT_DIR/config/example.yaml}"
 IMAGE="${PEYK_ORCHESTRATOR_IMAGE:-peyk-orchestrator:dev}"
 
-# peyk-vlm's cloud credentials — resolved to host-absolute paths (win_pwd, same as HOTSTORAGE
-# above) and passed into the orchestrator container as env vars, since pipeline.py's
+# peyk:dev's vlm stage's cloud credentials — resolved to host-absolute paths (win_pwd, same as
+# HOTSTORAGE above) and passed into the orchestrator container as env vars, since pipeline.py's
 # _vlm_credential_docker_args needs a real host path for the *inner* docker run (see that
 # function's docstring for why --volumes-from doesn't work for these). Empty string, not a
 # missing/unset var, if the file doesn't exist yet (fresh checkout without credentials set
 # up) — pipeline.py raises a clear error at dispatch time only if a config actually selects a
-# peyk-vlm backend needing the one that's missing, not on every run regardless of config.
-PEYK_VLM_DIR="$SCRIPT_DIR/../peyk-vlm"
+# vlm backend needing the one that's missing, not on every run regardless of config.
+PEYK_VLM_DIR="$SCRIPT_DIR/../peyk"
 if [ -f "$PEYK_VLM_DIR/.env" ]; then
     PEYK_VLM_ENV_FILE="$(win_pwd "$PEYK_VLM_DIR")/.env"
 else

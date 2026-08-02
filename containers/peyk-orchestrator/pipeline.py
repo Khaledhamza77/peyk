@@ -188,8 +188,8 @@ def assemble_markdown_table(structure: dict, cell_texts: dict[int, str], lang: s
 
 
 def _vlm_credential_docker_args(backend: str) -> list[str]:
-    """peyk-vlm's cloud credentials (containers/peyk-vlm/.env for Bedrock,
-    containers/peyk-vlm/gcp-key.json for Vertex) are fixed, local-dev-only files living in the
+    """The vlm stage's cloud credentials (containers/peyk/.env for Bedrock,
+    containers/peyk/gcp-key.json for Vertex) are fixed, local-dev-only files living in the
     repo — not runtime workdir paths inside the orchestrator's own /hotstorage mounts, so
     --volumes-from (stages.py) doesn't help here. run_local.sh resolves both to host-absolute
     paths and passes them in as PEYK_VLM_ENV_FILE/PEYK_VLM_GCP_KEY_FILE env vars; these are
@@ -210,7 +210,7 @@ def _vlm_credential_docker_args(backend: str) -> list[str]:
         if not env_file:
             raise ValueError(
                 f"model {backend!r} is a Bedrock model but PEYK_VLM_ENV_FILE isn't "
-                "set — see containers/peyk-vlm/README.md (generate a Bedrock API key) and "
+                "set — see containers/peyk/README.md (generate a Bedrock API key) and "
                 "run_local.sh (which resolves and passes this env var)."
             )
         return ["--env-file", env_file]
@@ -219,7 +219,7 @@ def _vlm_credential_docker_args(backend: str) -> list[str]:
         if not key_file:
             raise ValueError(
                 f"model {backend!r} is a Vertex model but PEYK_VLM_GCP_KEY_FILE "
-                "isn't set — see containers/peyk-vlm/README.md (create a service-account key) "
+                "isn't set — see containers/peyk/README.md (create a service-account key) "
                 "and run_local.sh (which resolves and passes this env var)."
             )
         return ["-v", f"{key_file}:/secrets/gcp-key.json:ro", "-e", "GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcp-key.json"]
@@ -393,7 +393,10 @@ def dispatch_table_full_batch(
             extra_args += ["--no-smart-split"]
         extra_docker_args = ["-v", "/var/run/docker.sock:/var/run/docker.sock"]
     else:
-        extra_args, extra_docker_args = ["--role", "table"], _vlm_credential_docker_args(backend)
+        # peyk-vlm's image is now peyk:dev (the merged worker), which multiplexes more than
+        # one role behind the same entrypoint — --stage vlm picks it, --role table picks the
+        # vlm stage's own role within that.
+        extra_args, extra_docker_args = ["--stage", "vlm", "--role", "table"], _vlm_credential_docker_args(backend)
     run_docker_stage(
         image=config.tsr.image,
         model=backend,
@@ -543,7 +546,8 @@ def dispatch_ocr_batch(
         # peyk-vlm's CLI has no --lang/--server-url (those are peyk-simple-ocr/peyk-surya
         # concepts) — --role ocr is its equivalent of the Surya --stage ocr special-case below,
         # and it needs its own credential args instead of a GPU flag (no local GPU at all).
-        ocr_extra_args = ["--role", "ocr"]
+        # peyk-vlm's image is now peyk:dev (the merged worker) too — --stage vlm picks it.
+        ocr_extra_args = ["--stage", "vlm", "--role", "ocr"]
         extra_docker_args = _vlm_credential_docker_args(backend)
     else:
         ocr_extra_args = ["--lang", stage_config.lang]
@@ -587,7 +591,7 @@ def dispatch_figures_batch(figures_batch: list[tuple[str, str]], config: Pipelin
         model=config.figures.backend,
         input_dir=figures_in,
         output_dir=figures_out,
-        extra_args=["--role", "figure"],
+        extra_args=["--stage", "vlm", "--role", "figure"],
         extra_docker_args=_vlm_credential_docker_args(config.figures.backend),
         gpu=False,
     )
@@ -620,6 +624,9 @@ def dispatch_dcr(doc_path: Path, dcr_targets: list[dict], config: PipelineConfig
         model=None,
         input_dir=dcr_in,
         output_dir=dcr_out,
+        # dcr's image is now peyk:dev (the merged worker), which multiplexes more than one
+        # role behind the same entrypoint — see run_layout's comment for the same reasoning.
+        extra_args=["--stage", "dcr"],
         gpu=False,
     )
     return {p.stem: json.loads(p.read_text())["text"] for p in dcr_out.glob("*.json")}

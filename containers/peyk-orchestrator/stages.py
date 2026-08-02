@@ -149,12 +149,14 @@ def list_vlm_models(image: str) -> dict[str, str]:
     "bedrock-"/"vertex-"). Real ground truth, not an assumption that could silently drift out of
     sync with the registry. No --volumes-from/--network needed: this doesn't touch any mounted
     dir or need to reach a sidecar, just prints a static list and exits. Returns
-    {model_key: provider}."""
-    result = subprocess.run(["docker", "run", "--rm", image, "--list-models"], capture_output=True, text=True)
+    {model_key: provider}. image is now peyk:dev (the merged worker), which multiplexes more
+    than one role behind the same entrypoint — --stage vlm picks it, same as every other
+    peyk-vlm dispatch in pipeline.py/run.py."""
+    result = subprocess.run(["docker", "run", "--rm", image, "--stage", "vlm", "--list-models"], capture_output=True, text=True)
     if result.returncode != 0:
         raise DockerStageError(
             f"{image} --list-models failed (exit {result.returncode}): {result.stderr.strip()} — "
-            "is the image built? (docker build -t peyk-vlm:dev containers/peyk-vlm)"
+            "is the image built? (docker build -t peyk:dev containers/peyk)"
         )
     models = {}
     for line in result.stdout.splitlines():
