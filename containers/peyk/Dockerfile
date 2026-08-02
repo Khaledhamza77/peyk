@@ -1,11 +1,18 @@
 # Merged worker (docs-personal/new_containerization_strategy.md) — layout+tsr+ocr's three
 # source Dockerfiles (peyk-layout, peyk-tsr, peyk-simple-ocr) were already near-identical: same
 # CUDA base, same paddlepaddle-gpu==3.3.0 + torch==2.12.1/torchvision==0.27.1 cu126 pin, same
-# apt deps, differing only in which stage's backends/ + weight-baking steps got copied in. dcr
-# and vlm (former peyk-dcr, peyk-vlm) need no GPU at all (pure pypdfium2 text extraction / remote
-# cloud API clients) but share this same image rather than a separate GPU/non-GPU split — see
-# the design doc for why one merged worker, not several, is the target shape. --stage at runtime
-# (see run.py) picks which stage actually executes.
+# apt deps, differing only in which stage's backends/ + weight-baking steps got copied in.
+# dcr/vlm/surya/paddleocr-vl/orchestrator (former peyk-dcr, peyk-vlm, peyk-surya,
+# peyk-paddleocr-vl, peyk-orchestrator) need no local GPU work of their own (pure pypdfium2 text
+# extraction, or thin HTTP clients against remote cloud APIs / the still-separate
+# peyk-vllm-server sidecar, or pure dispatch logic) but share this same image rather than a
+# separate GPU/non-GPU split — see the design doc for why one merged worker, not several, is the
+# target shape. The surya stage reuses the GPU torch already installed below for the other
+# stages (its own original image installed a CPU-only build instead, since it had no other torch
+# to reuse) — one fewer multi-hundred-MB duplicate install. --stage at runtime (see run.py,
+# default "orchestrator") picks which stage actually executes; stages dispatch each other
+# in-process now (stage_dispatch.py) rather than via docker-outside-of-docker, so this image no
+# longer needs the docker CLI or host docker socket at all.
 FROM nvidia/cuda:12.9.2-base-ubuntu22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -44,9 +51,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 # every container start. PP-DocLayoutV2/PP-StructureV3's weights themselves aren't baked into
 # the image at build time (tried; paddlepaddle-gpu hard-requires libcuda.so.1 just to import,
 # even for a "cpu" device, and `docker build` has no GPU passthrough) — instead mount a
-# persistent volume at /root/.paddlex when running (see peyk-orchestrator/stages.py) so weights
-# survive across `--rm` runs after the first download.
+# persistent volume at /root/.paddlex when running (see run_local.sh) so weights survive across
+# runs after the first download.
 ENV PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+
+# Governs settings.SURYA_MAX_TOKENS_TABLE_REC, used by TableRecPredictor's structure-only
+# predict() method (the surya stage's --role tsr) — NOT predict_full (--role table-full), which
+# is sized differently (see stages/surya/backends/client.py's predict_table_full docstring).
+# Bumped defensively above Surya's own default (3072); peyk-vllm-surya's --max-model-len is
+# large enough that this was never observed to truncate either way, kept as-is from the original
+# peyk-surya/Dockerfile rather than re-derived.
+ENV SURYA_MAX_TOKENS_TABLE_REC=4096
 
 # Heron and DocLayout-YOLO (layout) have no such constraint: they're plain huggingface_hub
 # downloads (HTTP only, no GPU/paddle import involved), so their weights CAN be baked in here —
@@ -102,6 +117,10 @@ COPY stages/tsr stages/tsr
 COPY stages/ocr stages/ocr
 COPY stages/dcr stages/dcr
 COPY stages/vlm stages/vlm
+COPY stages/surya stages/surya
+COPY stages/paddleocr-vl stages/paddleocr-vl
+COPY stages/orchestrator stages/orchestrator
+COPY stage_dispatch.py .
 COPY run.py .
 
 ENTRYPOINT ["python3", "run.py"]

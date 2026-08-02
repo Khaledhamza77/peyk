@@ -63,6 +63,17 @@ class SuryaClient:
     def load(self, roles: set[str]) -> None:
         os.environ["SURYA_INFERENCE_URL"] = self.server_url
         os.environ["SURYA_INFERENCE_BACKEND"] = "vllm"
+        # surya-ocr's own default (600s) is generous enough that a genuinely wedged vLLM
+        # request (observed live: requests stuck "Running" in the engine at 0 tokens/s
+        # generation throughput, unrelated to this project's own code — peyk-vllm-surya is a
+        # long-lived server accumulating scheduler/KV-cache state across many requests) blocks
+        # an entire batch for up to 10 minutes before failing. Shortened here so a stuck
+        # request fails fast enough for run.py's own retry loop (_predict_table_full_html) to
+        # actually route around it within a reasonable total wall-clock budget, instead of
+        # eating the full 10-minute default per attempt. Still generous next to any real
+        # observed call (a full 10-table batch, including three split-and-stitched corrections,
+        # completed in ~82s total).
+        os.environ.setdefault("SURYA_INFERENCE_TIMEOUT_SECONDS", "90")
 
         from surya.inference import SuryaInferenceManager
 

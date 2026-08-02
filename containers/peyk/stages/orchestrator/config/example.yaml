@@ -1,5 +1,5 @@
 # Pipeline config for peyk-orchestrator. Each section below is one job; `model` picks which
-# model runs it. Full peyk-vlm model list: `docker run --rm peyk-vlm:dev --list-models`.
+# model runs it. Full peyk-vlm model list: `docker run --rm peyk:dev --stage vlm --list-models`.
 
 # Detects page regions (text / table / figure).
 layout:

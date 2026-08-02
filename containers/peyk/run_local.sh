@@ -1,8 +1,24 @@
 #!/usr/bin/env bash
-# Runs peyk-orchestrator with the mounts it actually needs, so it behaves the same way
-# locally and on EC2:
-#   - the host docker socket, so it can dispatch sibling stage containers via
-#     docker-outside-of-docker (see stages.py)
+# Runs peyk (the merged worker+orchestrator image) with the mounts it actually needs, so it
+# behaves the same way locally and on EC2. Before docs-personal/new_containerization_strategy.md's
+# step 5, this ran peyk-orchestrator as its own container, which dispatched every stage as a
+# sibling container over docker-outside-of-docker (host docker socket, --volumes-from,
+# per-stage container naming/cleanup, a peyk-net bootstrap race between peyk-orchestrator and
+# the vLLM sidecars). All of that is gone now: peyk-orchestrator's own dispatch logic moved
+# in-process (stages/orchestrator/, stage_dispatch.py) — this is the ONE container for the whole
+# pipeline, so mounts/flags below apply to it directly instead of needing to be threaded through
+# to nested sibling containers.
+#   - --gpus all: previously only added to nested per-stage `docker run`s (stages.py's own
+#     `gpu` flag) since peyk-orchestrator itself never touched a GPU directly — now that every
+#     stage runs in this same process, THIS container needs GPU access itself.
+#   - --network peyk-net: so the vlm/surya/paddleocr-vl stages can reach the still-separate
+#     peyk-vllm-surya/peyk-vllm-paddleocr sidecars by container name. Bootstrapped here
+#     (docker network create, idempotent) since there's no longer a per-stage dispatch to do it
+#     from — must exist before those sidecars are started too; whichever comes up first creates
+#     it.
+#   - -v peyk-paddlex-cache:/root/.paddlex: PaddleX's model cache (layout/ocr backends) —
+#     previously mounted into each nested per-stage container by stages.py; now just mounted
+#     directly onto this one container.
 #   - config/ bind-mounted OVER the image's baked-in default, so editing config/example.yaml
 #     (or pointing PEYK_CONFIG at a different file) takes effect on the next run with no
 #     rebuild
@@ -18,16 +34,9 @@
 #     the run is in progress — fixed by mirroring the volume back onto $HOTSTORAGE/workdir on
 #     the host after every run (see the bottom of this script), so it's still there to browse
 #     once the run finishes, at the cost of one extra copy at the end rather than per-file
-#     during the run. All of this is still local-disk-only, never S3, safe to wipe between jobs
-#     — same as before, just split across two mount types.
-#     Sibling stage containers reach all of it via `--volumes-from` this container's fixed name
-#     (see stages.py's ORCHESTRATOR_CONTAINER_NAME) rather than a host-path bind mount of their
-#     own — the orchestrator itself runs containerized, so a sibling it dispatches via the host
-#     docker socket can't resolve a bind-mount source expressed as *this* container's own path
-#     (e.g. "/hotstorage/...") against the host filesystem; --volumes-from sidesteps that
-#     entirely by reusing this container's already-resolved mounts instead of re-deriving a
-#     host path — and this works identically whether a given mount is a bind mount or a named
-#     volume, so mixing the two here doesn't complicate that fix at all.
+#     during the run. All of this is still local-disk-only, never S3, safe to wipe between jobs.
+#   - vlm stage credentials (containers/peyk/.env for Bedrock, gcp-key.json for Vertex) are
+#     mounted directly onto this one container now too — see below.
 #
 # Usage: ./run_local.sh [-- <extra docker run args>]
 set -euo pipefail
@@ -54,32 +63,32 @@ win_pwd() {
 
 SCRIPT_DIR="$(win_pwd "$(dirname "${BASH_SOURCE[0]}")")"
 HOTSTORAGE="${PEYK_HOTSTORAGE:-$SCRIPT_DIR/../../hotstorage}"
-CONFIG_FILE="${PEYK_CONFIG:-$SCRIPT_DIR/config/example.yaml}"
-IMAGE="${PEYK_ORCHESTRATOR_IMAGE:-peyk-orchestrator:dev}"
+CONFIG_FILE="${PEYK_CONFIG:-$SCRIPT_DIR/stages/orchestrator/config/example.yaml}"
+IMAGE="${PEYK_IMAGE:-peyk:dev}"
 
-# peyk:dev's vlm stage's cloud credentials — resolved to host-absolute paths (win_pwd, same as
-# HOTSTORAGE above) and passed into the orchestrator container as env vars, since pipeline.py's
-# _vlm_credential_docker_args needs a real host path for the *inner* docker run (see that
-# function's docstring for why --volumes-from doesn't work for these). Empty string, not a
-# missing/unset var, if the file doesn't exist yet (fresh checkout without credentials set
-# up) — pipeline.py raises a clear error at dispatch time only if a config actually selects a
-# vlm backend needing the one that's missing, not on every run regardless of config.
-PEYK_VLM_DIR="$SCRIPT_DIR/../peyk"
+# vlm stage's cloud credentials — resolved to host-absolute paths (win_pwd, same as HOTSTORAGE
+# above) and mounted/passed directly onto this one container. Empty/absent, not an error, if a
+# file doesn't exist yet (fresh checkout without credentials set up) —
+# pipeline.py._validate_vlm_credentials raises a clear error at dispatch time only if a config
+# actually selects a vlm backend needing the one that's missing, not on every run regardless of
+# config.
+PEYK_VLM_DIR="$SCRIPT_DIR"
+ENV_FILE_ARGS=()
 if [ -f "$PEYK_VLM_DIR/.env" ]; then
-    PEYK_VLM_ENV_FILE="$(win_pwd "$PEYK_VLM_DIR")/.env"
-else
-    PEYK_VLM_ENV_FILE=""
+    ENV_FILE_ARGS=(--env-file "$(win_pwd "$PEYK_VLM_DIR")/.env")
 fi
+GCP_KEY_ARGS=()
 if [ -f "$PEYK_VLM_DIR/gcp-key.json" ]; then
-    PEYK_VLM_GCP_KEY_FILE="$(win_pwd "$PEYK_VLM_DIR")/gcp-key.json"
-else
-    PEYK_VLM_GCP_KEY_FILE=""
+    GCP_KEY_ARGS=(-v "$(win_pwd "$PEYK_VLM_DIR")/gcp-key.json:/secrets/gcp-key.json:ro" -e "GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcp-key.json")
 fi
-# Must match stages.py's ORCHESTRATOR_CONTAINER_NAME.
-CONTAINER_NAME="peyk-orchestrator-run"
+
+# Must match this run's --name below.
+CONTAINER_NAME="peyk-run"
 # Docker creates this automatically on first use if it doesn't exist — no separate
-# provisioning step needed, same as the peyk-paddlex-cache/peyk-vllm-paddleocr-cache volumes.
+# provisioning step needed, same as the peyk-paddlex-cache volume below.
 WORKDIR_VOLUME="peyk-hotstorage-workdir"
+PADDLEX_CACHE_VOLUME="peyk-paddlex-cache"
+PEYK_NETWORK="peyk-net"
 
 mkdir -p "$HOTSTORAGE/input" "$HOTSTORAGE/output"
 # Re-resolved now that it's guaranteed to exist (HOTSTORAGE may be relative and/or not have
@@ -87,21 +96,26 @@ mkdir -p "$HOTSTORAGE/input" "$HOTSTORAGE/output"
 HOTSTORAGE="$(win_pwd "$HOTSTORAGE")"
 
 # Force-remove any container left over from a previous run under this same fixed name (e.g.
-# a prior run killed rather than left to exit cleanly) — same reasoning as stages.py's own
-# per-stage cleanup. Errors ignored: the common case is there's nothing to remove.
+# a prior run killed rather than left to exit cleanly). Errors ignored: the common case is
+# there's nothing to remove.
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+# Idempotent: errors (already exists) ignored. Must exist before peyk-vllm-surya/
+# peyk-vllm-paddleocr are started too — whichever comes up first creates it.
+docker network create "$PEYK_NETWORK" >/dev/null 2>&1 || true
 
 set +e
 docker run --rm --name "$CONTAINER_NAME" \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$SCRIPT_DIR/config:/app/config:ro" \
+  --gpus all \
+  --network "$PEYK_NETWORK" \
+  -v "$SCRIPT_DIR/stages/orchestrator/config:/app/stages/orchestrator/config:ro" \
   -v "$HOTSTORAGE/input:/hotstorage/input" \
   -v "$HOTSTORAGE/output:/hotstorage/output" \
   -v "$WORKDIR_VOLUME:/hotstorage/workdir" \
-  -e PEYK_VLM_ENV_FILE="$PEYK_VLM_ENV_FILE" \
-  -e PEYK_VLM_GCP_KEY_FILE="$PEYK_VLM_GCP_KEY_FILE" \
+  -v "$PADDLEX_CACHE_VOLUME:/root/.paddlex" \
+  "${ENV_FILE_ARGS[@]}" \
+  "${GCP_KEY_ARGS[@]}" \
   "$IMAGE" \
-  --config "/app/config/$(basename "$CONFIG_FILE")" \
+  --config "/app/stages/orchestrator/config/$(basename "$CONFIG_FILE")" \
   --input /hotstorage/input \
   --output /hotstorage/output \
   --workdir /hotstorage/workdir \

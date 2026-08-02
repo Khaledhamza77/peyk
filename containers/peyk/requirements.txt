@@ -1,10 +1,31 @@
-paddlex[cv,ocr]==3.7.0
-pypdfium2==4.30.1
-pillow==11.1.0
+# genai-client extra added for the paddleocr-vl stage (OpenAI-compatible HTTP client against
+# peyk-vllm-paddleocr) — paddleocr-vl's own original requirements.txt installed this as a
+# separate paddlex[genai-client]==3.7.0 line; same version already pinned here, so it's just
+# another extra on this one line instead of a second paddlex install.
+paddlex[cv,ocr,genai-client]==3.7.0
+# Downgraded from this project's original 4.30.1 pin — the surya stage's surya-ocr==0.20.0
+# pins pypdfium2 to exactly 4.30.0, and paddlex only needs >=4, so 4.30.0 satisfies both instead
+# of conflicting. (surya-ocr>=0.21.2 relaxes this to pypdfium2<6,>=5.10.1, and was tried
+# briefly, but 0.21.2+ also bumps its huggingface-hub floor to >=1.5.0 — a hard conflict with
+# docling-ibm-models' own huggingface_hub<1 cap, with no version of either package that
+# resolves it. See google-genai's comment below for the same reasoning applied one level up:
+# 0.20.0 is the version that actually coexists with everything else installed here.)
+pypdfium2==4.30.0
+# Downgraded from 11.1.0 (this project's original pin here, no known hard floor of its own) to
+# 10.4.0 — the surya stage's surya-ocr==0.20.0 requires pillow<11.0.0 (transformers/torchvision-
+# era constraint, see the original peyk-surya/requirements.txt) and fails the build outright
+# against anything newer. If a future paddlex/docling-ibm-models version needs pillow>=11, this
+# is the pin to revisit — bump it and confirm surya-ocr still resolves, or vice versa.
+pillow==10.4.0
 
 # DocLayout-YOLO backend (layout)
 doclayout-yolo==0.0.4
-huggingface_hub==0.28.1
+# Loosened from an exact ==0.28.1 pin (this project's original pin here, chosen with no
+# documented hard requirement — hf_hub_download/snapshot_download, the only two calls this
+# image makes against it, are stable across versions) to a floor: surya-ocr's own transformers
+# dependency resolves to a version requiring huggingface-hub>=0.34, which an exact 0.28.1 pin
+# made impossible to satisfy alongside everything else.
+huggingface_hub>=0.28.1
 
 # Heron (layout) / TableFormer (tsr) backend — same package/version both use
 docling-ibm-models[opencv-python-headless]==3.9.0
@@ -32,6 +53,32 @@ pytesseract==0.3.13
 
 # vlm stage — remote cloud LLM API clients (Bedrock, Vertex AI), no local model/GPU deps.
 boto3>=1.35                 # stages/vlm/backends/bedrock.py
+# surya-ocr==0.20.0 (below) needs httpx<0.28; every google-genai version with a thinking_budget
+# field on ThinkingConfig (>=1.10) needs httpx>=0.28.1 instead — no overlap, so this shared
+# environment can only ever get an older google-genai than stages/vlm/backends/vertex_gemini.py
+# would ideally want (confirmed: no combination of surya-ocr/google-genai/docling-ibm-models
+# versions resolves all three at once — see pypdfium2's comment above for the full chain).
+# vertex_gemini.py itself now degrades gracefully when thinking_budget isn't available (falls
+# back to the SDK's own default instead of erroring), so an older, real-resolvable google-genai
+# here is deliberate, not an oversight — left at its original floor.
 google-genai>=0.7           # stages/vlm/backends/vertex_gemini.py
 google-auth>=2.35           # stages/vlm/backends/vertex_maas.py (bearer-token auth for the OpenAI-compatible MaaS endpoint)
-openai>=1.63                # stages/vlm/backends/vertex_maas.py (same OpenAI-compatible-client pattern peyk-paddleocr-vl uses)
+openai>=1.63                # stages/vlm/backends/vertex_maas.py and stages/paddleocr-vl/backends/paddleocr_vl.py (same OpenAI-compatible-client pattern)
+
+# surya stage — thin HTTP client against the persistent peyk-vllm-surya server, no local GPU
+# calls of its own. Exact-pinned (not >=0.20) for the same determinism reason every other
+# dependency here is pinned — >=0.20 alone made pip walk every surya-ocr release down from
+# 0.20.0 trying to satisfy pillow's constraint before failing (see pillow's own comment above).
+# Deliberately NOT bumped to >=0.21.2 despite that relaxing surya-ocr's own httpx bound (which
+# would otherwise let google-genai resolve newer): 0.21.2+ also bumps its huggingface-hub floor
+# to >=1.5.0, which conflicts with docling-ibm-models' own huggingface_hub<1 cap — a worse
+# tradeoff (breaking the Heron/TableFormer backends, both load-bearing) than google-genai's
+# vertex_gemini.py already handling gracefully. See pypdfium2's/google-genai's own comments
+# above for the full chain.
+surya-ocr==0.20.0
+markdownify>=0.13           # stages/surya/run.py's run_fullpage() converts HTML to markdown; also stages/orchestrator/pipeline.py's assemble_document() (full-table HTML -> markdown)
+tqdm>=4.66                  # already a transitive dep of surya-ocr/huggingface_hub, declared explicitly since stages/surya/run.py imports it directly for progress bars
+numpy>=1.26,<2.0             # stages/surya/backends/sharpness.py's laplacian_variance (Q1 blur-detection trigger)
+
+# orchestrator stage — pure dispatch/assembly logic, no model/GPU of its own.
+pyyaml                      # stages/orchestrator/config.py's load_config()

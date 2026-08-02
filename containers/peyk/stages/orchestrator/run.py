@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 from config import load_config
-from pipeline import _vlm_credential_docker_args, dispatch_documents, render_pdf_pages, run_layout
+from pipeline import _validate_vlm_credentials, dispatch_documents, render_pdf_pages, run_layout
 from stages import run_docker_stage
 
 # Fixed convention rather than a tempfile.TemporaryDirectory(): /hotstorage is bind-mounted to
@@ -56,7 +56,7 @@ def _run_fullpage(config, args: argparse.Namespace) -> int:
             model="surya",
             input_dir=args.input,
             output_dir=surya_out,
-            extra_args=["--mode", "fullpage"],
+            extra_args=["--stage", "surya", "--mode", "fullpage"],
         )
         for md_path in surya_out.glob("*.md"):
             (args.output / md_path.name).write_text(md_path.read_text(encoding="utf-8"), encoding="utf-8")
@@ -81,6 +81,7 @@ def _run_fullpage(config, args: argparse.Namespace) -> int:
         for page_idx, page_path in pages.items():
             dest = fullpage_in / f"{doc_stem}__p{page_idx}.png"
             dest.write_bytes(page_path.read_bytes())
+    _validate_vlm_credentials(model)
     fullpage_out = args.workdir / "fullpage_out"
     run_docker_stage(
         image=config.fullpage.image,
@@ -88,8 +89,6 @@ def _run_fullpage(config, args: argparse.Namespace) -> int:
         input_dir=fullpage_in,
         output_dir=fullpage_out,
         extra_args=["--stage", "vlm", "--role", "fullpage"],
-        extra_docker_args=_vlm_credential_docker_args(model),
-        gpu=False,
     )
     page_results: dict[str, dict[int, str]] = {}
     for json_path in fullpage_out.glob("*.json"):

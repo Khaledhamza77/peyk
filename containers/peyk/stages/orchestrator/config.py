@@ -10,21 +10,25 @@ import yaml
 from stages import list_vlm_models
 
 
-# Which image each classical ocr model runs in — see containers/peyk/ (the merged
-# layout+tsr+ocr worker, docs-personal/new_containerization_strategy.md) and
-# containers/peyk-paddleocr-vl/ (the split rationale is in implementation_plan.md Task 1.3).
-# Derived automatically from `model` rather than requiring `image` in the yaml too: the
-# pairing is fully determined by the model choice, so making both configurable independently
-# just invites a config that sets model: paddleocr-vl but forgets to also flip image (or vice
-# versa) — a mismatch `run_docker_stage` has no way to catch, since it just docker-runs
-# whatever image/model string it's given.
+# Which image each classical ocr model runs in — all of them now resolve to peyk:dev (the
+# merged worker, docs-personal/new_containerization_strategy.md — layout/tsr/ocr/dcr/vlm/surya/
+# paddleocr-vl all live under its stages/, split rationale for the *models* themselves is in
+# implementation_plan.md Task 1.3). Kept as an explicit per-model dict rather than collapsed
+# to a single constant for now — still the validation mechanism for "is this a recognized
+# model", and each entry's own --stage/--role dispatch differs (see pipeline.py); revisit
+# once every entry converges (tracked as the consolidation plan's own step 7). Derived
+# automatically from `model` rather than requiring `image` in the yaml too: the pairing is
+# fully determined by the model choice, so making both configurable independently just invites
+# a config that sets model: paddleocr-vl but forgets to also flip image (or vice versa) — a
+# mismatch `run_docker_stage` has no way to catch, since it just docker-runs whatever
+# image/model string it's given.
 OCR_MODEL_IMAGES = {
-    "paddleocr-vl": "peyk-paddleocr-vl:dev",
+    "paddleocr-vl": "peyk:dev",
     "paddleocr": "peyk:dev",
     "easyocr": "peyk:dev",
     "rapidocr": "peyk:dev",
     "tesseract": "peyk:dev",
-    "surya": "peyk-surya:dev",
+    "surya": "peyk:dev",
 }
 
 # Same derivation for layout. "surya-layout" (peyk-layout's own unimplemented stub backend,
@@ -36,7 +40,7 @@ LAYOUT_MODEL_IMAGES = {
     "pp-doclayout-v2": "peyk:dev",
     "doclayout-yolo": "peyk:dev",
     "heron": "peyk:dev",
-    "surya": "peyk-surya:dev",
+    "surya": "peyk:dev",
 }
 
 # tsr (table STRUCTURE recognition, no text) similarly has no bare peyk-vlm option — every
@@ -51,7 +55,7 @@ TSR_MODEL_IMAGES = {
     "pp-structure-general": "peyk:dev",
     "pp-structure-wiring": "peyk:dev",
     "tableformer": "peyk:dev",
-    "surya": "peyk-surya:dev",
+    "surya": "peyk:dev",
 }
 
 # peyk-paddleocr-vl's default --server-url already matches this (see that container's
@@ -77,14 +81,14 @@ DEFAULT_DCR_IMAGE = "peyk:dev"
 
 @functools.lru_cache(maxsize=1)
 def _vlm_models() -> dict[str, str]:
-    """{model_key: provider} for every model peyk-vlm actually supports, queried directly from
-    the container (`docker run --rm peyk:dev --stage vlm --list-models`) rather than assumed from a
-    naming convention (e.g. "does this string start with bedrock-/vertex-?") — a convention
-    that could silently drift out of sync with the real registry, and offered no way to
-    validate a typo'd model name until peyk-vlm's own argparse rejected it at dispatch time.
-    Cached: load_config() calls into this multiple times (tsr/ocr/cell_ocr/figures/fullpage),
-    and the answer can't change within one process's lifetime."""
-    return list_vlm_models(DEFAULT_VLM_IMAGE)
+    """{model_key: provider} for every model the vlm stage actually supports, queried directly
+    (in-process, via stage_dispatch.call_stage("vlm", ["--list-models"]) — see stages.py) rather
+    than assumed from a naming convention (e.g. "does this string start with bedrock-/vertex-?")
+    — a convention that could silently drift out of sync with the real registry, and offered no
+    way to validate a typo'd model name until the vlm stage's own argparse rejected it at
+    dispatch time. Cached: load_config() calls into this multiple times (tsr/ocr/cell_ocr/
+    figures/fullpage), and the answer can't change within one process's lifetime."""
+    return list_vlm_models()
 
 
 def is_vlm_model(model: str | None) -> bool:
@@ -93,8 +97,8 @@ def is_vlm_model(model: str | None) -> bool:
 
 def vlm_provider(model: str) -> str:
     """The real provider ("bedrock", "vertex-gemini", "vertex-maas") for a peyk-vlm model key,
-    per peyk-vlm's own registry — used to decide which cloud's credentials to mount (see
-    pipeline.py's _vlm_credential_docker_args), instead of guessing from the key's spelling."""
+    per the vlm stage's own registry — used to decide which credential env var to check (see
+    pipeline.py's _validate_vlm_credentials), instead of guessing from the key's spelling."""
     return _vlm_models()[model]
 
 
@@ -231,7 +235,11 @@ def _fullpage_stage(raw: dict | None) -> StageConfig | None:
             f"({sorted(_vlm_models())})."
         )
     if stage.image is None:
-        stage.image = "peyk-surya:dev" if stage.backend == "surya" else DEFAULT_VLM_IMAGE
+        # Both "surya" and every peyk-vlm model now resolve to the same merged worker image —
+        # kept as an explicit assignment (not simplified to always DEFAULT_VLM_IMAGE) since the
+        # two cases still dispatch via different extra_args (--stage surya --mode fullpage vs.
+        # --stage vlm --role fullpage — see run.py's _run_fullpage).
+        stage.image = "peyk:dev"
     return stage
 
 

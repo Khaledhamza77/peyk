@@ -150,11 +150,14 @@ def _cached_page_image(path: Path, cache: dict[Path, Image.Image]) -> Image.Imag
 def run_layout(config: PipelineConfig, input_dir: Path, workdir: Path) -> dict[str, dict]:
     """Batch layout over every document in input_dir. Returns {doc_stem: regions_json}."""
     out_dir = workdir / "layout_out"
-    # Every layout backend's image (peyk:dev, the merged layout+tsr+ocr worker, or
-    # peyk-surya:dev) now needs an explicit --stage layout to know which role to serve —
-    # unconditional, not backend-specific, since both images multiplex more than one role
-    # behind the same entrypoint (see containers/peyk/run.py, containers/peyk-surya/run.py).
-    extra_args = ["--visualize", "--stage", "layout"]
+    # Every layout backend now lives under peyk:dev, but surya is a module-within-a-module: the
+    # outer --stage picks it (--stage surya), and its own --role picks its layout role within
+    # that (see containers/peyk/stages/surya/run.py) — a different shape from every other
+    # layout backend, which is directly a top-level stage (--stage layout, no --role needed).
+    if config.layout.backend == "surya":
+        extra_args = ["--visualize", "--stage", "surya", "--role", "layout"]
+    else:
+        extra_args = ["--visualize", "--stage", "layout"]
     run_docker_stage(
         image=config.layout.image,
         model=config.layout.backend,
@@ -187,43 +190,43 @@ def assemble_markdown_table(structure: dict, cell_texts: dict[int, str], lang: s
     return "\n".join(lines)
 
 
-def _vlm_credential_docker_args(backend: str) -> list[str]:
+def _validate_vlm_credentials(backend: str) -> None:
     """The vlm stage's cloud credentials (containers/peyk/.env for Bedrock,
-    containers/peyk/gcp-key.json for Vertex) are fixed, local-dev-only files living in the
-    repo — not runtime workdir paths inside the orchestrator's own /hotstorage mounts, so
-    --volumes-from (stages.py) doesn't help here. run_local.sh resolves both to host-absolute
-    paths and passes them in as PEYK_VLM_ENV_FILE/PEYK_VLM_GCP_KEY_FILE env vars; these are
-    then used as literal host paths in the *inner* `docker run` below, which reaches the host
-    daemon directly over the shared socket (same reasoning stages.py's run_docker_stage
-    docstring already documents for input_dir/output_dir, just via a fixed config-known path
-    here instead of a dynamic one). Raises loudly if the one actually needed isn't set, rather
-    than silently dispatching peyk-vlm without credentials. Used by any job that routes to a
-    peyk-vlm model — ocr, tsr (full-table combination), figures, fullpage alike.
+    containers/peyk/gcp-key.json for Vertex) used to need per-dispatch docker-arg construction
+    (--env-file / -v secrets:... -e GOOGLE_APPLICATION_CREDENTIALS=...) to mount into a nested
+    sibling container. Now that the vlm stage runs in-process in this same container, the actual
+    wiring happens once, at container start, in run_local.sh (--env-file on the one `docker run`
+    for Bedrock; a bind mount + -e GOOGLE_APPLICATION_CREDENTIALS for Vertex) — boto3/
+    google-genai/google-auth all read these standard env vars themselves (bearer-token env var
+    autodetection, Application Default Credentials) with no extra plumbing needed here. This
+    function only keeps the loud, actionable failure this project's had from the start: raise
+    before dispatch if the credential the model's real provider needs isn't set, rather than
+    letting boto3/google-auth's own (often much less clear) native error surface instead. Used
+    by any job that routes to a vlm model — ocr, tsr (full-table combination), figures, fullpage
+    alike.
 
-    Which credential file to use is decided by the model's real provider (config.vlm_provider,
-    queried from peyk-vlm's own registry — see config.py's _vlm_models), not by guessing from
-    the model key's spelling: "bedrock" needs AWS credentials, "vertex-gemini"/"vertex-maas"
-    both need the same GCP credentials (they're the same cloud, just different Vertex APIs)."""
+    Which credential env var to check is decided by the model's real provider
+    (config.vlm_provider, queried from the vlm stage's own registry — see config.py's
+    _vlm_models), not by guessing from the model key's spelling: "bedrock" needs AWS
+    credentials, "vertex-gemini"/"vertex-maas" both need the same GCP credentials (they're the
+    same cloud, just different Vertex APIs)."""
     provider = vlm_provider(backend)
     if provider == "bedrock":
-        env_file = os.environ.get("PEYK_VLM_ENV_FILE")
-        if not env_file:
+        if not os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
             raise ValueError(
-                f"model {backend!r} is a Bedrock model but PEYK_VLM_ENV_FILE isn't "
+                f"model {backend!r} is a Bedrock model but AWS_BEARER_TOKEN_BEDROCK isn't "
                 "set — see containers/peyk/README.md (generate a Bedrock API key) and "
-                "run_local.sh (which resolves and passes this env var)."
+                "run_local.sh (which passes it via --env-file)."
             )
-        return ["--env-file", env_file]
-    if provider in ("vertex-gemini", "vertex-maas"):
-        key_file = os.environ.get("PEYK_VLM_GCP_KEY_FILE")
-        if not key_file:
+    elif provider in ("vertex-gemini", "vertex-maas"):
+        if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
             raise ValueError(
-                f"model {backend!r} is a Vertex model but PEYK_VLM_GCP_KEY_FILE "
-                "isn't set — see containers/peyk/README.md (create a service-account key) "
-                "and run_local.sh (which resolves and passes this env var)."
+                f"model {backend!r} is a Vertex model but GOOGLE_APPLICATION_CREDENTIALS isn't "
+                "set — see containers/peyk/README.md (create a service-account key) and "
+                "run_local.sh (which mounts gcp-key.json and sets this)."
             )
-        return ["-v", f"{key_file}:/secrets/gcp-key.json:ro", "-e", "GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcp-key.json"]
-    raise ValueError(f"Unknown peyk-vlm provider {provider!r} for model {backend!r}")
+    else:
+        raise ValueError(f"Unknown vlm provider {provider!r} for model {backend!r}")
 
 
 def prepare_document(
@@ -335,10 +338,12 @@ def dispatch_tsr_batch(tsr_batch: list[tuple[str, str, Path]], config: PipelineC
         dest = tsr_in / f"{doc_stem}__{local_id}{crop_path.suffix}"
         dest.write_bytes(crop_path.read_bytes())
     tsr_out = workdir / "tsr_out"
-    # Every classical tsr backend's image (peyk:dev) and surya's own (peyk-surya:dev) both
-    # multiplex more than one role behind the same entrypoint, so --stage tsr is unconditional
-    # here — see run_layout's comment above for the same reasoning.
-    extra_args = ["--visualize", "--stage", "tsr"]
+    # Same surya-is-a-module-within-a-module shape as run_layout's comment above — outer
+    # --stage surya + inner --role tsr for surya, plain --stage tsr for every classical backend.
+    if config.tsr.backend == "surya":
+        extra_args = ["--visualize", "--stage", "surya", "--role", "tsr"]
+    else:
+        extra_args = ["--visualize", "--stage", "tsr"]
     run_docker_stage(
         image=config.tsr.image,
         model=config.tsr.backend,
@@ -375,11 +380,13 @@ def dispatch_table_full_batch(
     table_full_out = workdir / "table_full_out"
     backend = config.tsr.backend
     if backend == "surya":
-        # peyk-surya's --stage table-full now decides internally (per crop) whether a table
-        # needs splitting, and if so calls peyk-tsr itself for TableFormer's row/column
-        # structure — needs the host docker socket to do that docker-in-docker dispatch. See
-        # docs-personal/surya/improvement.md's "Before integrating" section, decision 1.
-        extra_args = ["--stage", "table-full"]
+        # surya's own --role table-full now decides internally (per crop) whether a table needs
+        # splitting, and if so calls the tsr stage itself in-process (stages/surya/backends/
+        # tsr_dispatch.py, via stage_dispatch.call_stage — no docker socket needed anymore, that
+        # was only ever needed for the old docker-in-docker dispatch). Outer --stage surya +
+        # inner --role table-full, same shape as every other surya dispatch above
+        # (run_layout/dispatch_tsr_batch).
+        extra_args = ["--stage", "surya", "--role", "table-full"]
         smart_split = config.surya_smart_table_split
         if smart_split.enabled:
             extra_args += [
@@ -391,20 +398,17 @@ def dispatch_table_full_batch(
             ]
         else:
             extra_args += ["--no-smart-split"]
-        extra_docker_args = ["-v", "/var/run/docker.sock:/var/run/docker.sock"]
     else:
-        # peyk-vlm's image is now peyk:dev (the merged worker), which multiplexes more than
-        # one role behind the same entrypoint — --stage vlm picks it, --role table picks the
-        # vlm stage's own role within that.
-        extra_args, extra_docker_args = ["--stage", "vlm", "--role", "table"], _vlm_credential_docker_args(backend)
+        # The vlm stage multiplexes more than one role behind the same entrypoint — --stage vlm
+        # picks it, --role table picks the vlm stage's own role within that.
+        _validate_vlm_credentials(backend)
+        extra_args = ["--stage", "vlm", "--role", "table"]
     run_docker_stage(
         image=config.tsr.image,
         model=backend,
         input_dir=table_full_in,
         output_dir=table_full_out,
         extra_args=extra_args,
-        extra_docker_args=extra_docker_args,
-        gpu=(backend == "surya"),
     )
     results: dict[str, dict[str, str]] = {}
     for json_path in table_full_out.glob("*.json"):
@@ -543,23 +547,23 @@ def dispatch_ocr_batch(
     backend = stage_config.backend
     is_vlm = is_vlm_model(backend)
     if is_vlm:
-        # peyk-vlm's CLI has no --lang/--server-url (those are peyk-simple-ocr/peyk-surya
-        # concepts) — --role ocr is its equivalent of the Surya --stage ocr special-case below,
-        # and it needs its own credential args instead of a GPU flag (no local GPU at all).
-        # peyk-vlm's image is now peyk:dev (the merged worker) too — --stage vlm picks it.
+        # The vlm stage's CLI has no --lang/--server-url (those are classical-ocr/surya/
+        # paddleocr-vl concepts) — --role ocr is its equivalent of the surya/paddleocr-vl
+        # --stage below. Every stage now lives in this same process — --stage vlm picks this one.
+        _validate_vlm_credentials(backend)
         ocr_extra_args = ["--stage", "vlm", "--role", "ocr"]
-        extra_docker_args = _vlm_credential_docker_args(backend)
     else:
         ocr_extra_args = ["--lang", stage_config.lang]
         if stage_config.server_url:
             ocr_extra_args += ["--server-url", stage_config.server_url]
-        # peyk-paddleocr-vl:dev is the one remaining classical-OCR image that does ONE thing
-        # and has no --stage flag at all; every other classical backend's image (peyk:dev, the
-        # merged layout+tsr+ocr worker) or surya's own (peyk-surya:dev) multiplexes more than
-        # one role behind the same entrypoint and needs --stage ocr to pick this one.
-        if backend != "paddleocr-vl":
-            ocr_extra_args += ["--stage", "ocr"]
-        extra_docker_args = None
+        # Every non-vlm ocr backend now lives under peyk:dev too, but surya is a module-within-
+        # a-module the same way run_layout/dispatch_tsr_batch's own comments explain — outer
+        # --stage surya + inner --role ocr, vs. every other classical backend (including
+        # paddleocr-vl, now also just another top-level --stage) needing only --stage <name>.
+        if backend == "surya":
+            ocr_extra_args += ["--stage", "surya", "--role", "ocr"]
+        else:
+            ocr_extra_args += ["--stage", "paddleocr-vl" if backend == "paddleocr-vl" else "ocr"]
     ocr_out = workdir / out_dir_name
     run_docker_stage(
         image=stage_config.image,
@@ -567,8 +571,6 @@ def dispatch_ocr_batch(
         input_dir=ocr_in,
         output_dir=ocr_out,
         extra_args=ocr_extra_args,
-        extra_docker_args=extra_docker_args,
-        gpu=not is_vlm,
     )
     results: dict[str, dict[str, str]] = {}
     for json_path in ocr_out.glob("*.json"):
@@ -585,6 +587,7 @@ def dispatch_figures_batch(figures_batch: list[tuple[str, str]], config: Pipelin
     {doc_stem: {local_id: description}}."""
     if not figures_batch:
         return {}
+    _validate_vlm_credentials(config.figures.backend)
     figures_out = workdir / "figures_out"
     run_docker_stage(
         image=config.figures.image,
@@ -592,8 +595,6 @@ def dispatch_figures_batch(figures_batch: list[tuple[str, str]], config: Pipelin
         input_dir=figures_in,
         output_dir=figures_out,
         extra_args=["--stage", "vlm", "--role", "figure"],
-        extra_docker_args=_vlm_credential_docker_args(config.figures.backend),
-        gpu=False,
     )
     results: dict[str, dict[str, str]] = {}
     for json_path in figures_out.glob("*.json"):
@@ -627,7 +628,6 @@ def dispatch_dcr(doc_path: Path, dcr_targets: list[dict], config: PipelineConfig
         # dcr's image is now peyk:dev (the merged worker), which multiplexes more than one
         # role behind the same entrypoint — see run_layout's comment for the same reasoning.
         extra_args=["--stage", "dcr"],
-        gpu=False,
     )
     return {p.stem: json.loads(p.read_text())["text"] for p in dcr_out.glob("*.json")}
 

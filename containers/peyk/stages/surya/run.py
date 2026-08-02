@@ -2,22 +2,25 @@
 """Surya-OCR-2 CLI — a thin client against a persistent peyk-vllm-surya vLLM server (see that
 container's README). Two independent modes:
 
-Stage mode (default) — matches one of peyk-layout/peyk-tsr/peyk-simple-ocr's exact per-stage
-output contracts, selected via --stage, so peyk-orchestrator can swap "surya" in as the
+Stage mode (default) — matches one of peyk:dev's layout/tsr/ocr stages' exact per-stage
+output contracts, selected via --role, so peyk-orchestrator can swap "surya" in as the
 backend for layout.backend/tsr.backend/ocr.backend one at a time, same as any other backend.
-table-full is the exception: not a drop-in replacement for another container's stage — it's
-peyk-orchestrator's dedicated dispatch for the tsr.backend=="surya" case when the backend that
-would actually OCR table cells (cell_ocr if set, else ocr) is also "surya" (config.py's
-full_surya_tables — deliberately independent of ocr.backend itself, which only governs
-non-table text), using predict_full (structure+text in one call per table) instead of the
-usual structure-then-per-cell-OCR split every other backend combination goes through (see
-pipeline.py and implementation_plan.md Task 1.5/1.8 for why isolated per-cell OCR is avoided
-when possible):
+Lives at containers/peyk/stages/surya/ under the merged peyk image
+(docs-personal/new_containerization_strategy.md) — dispatched as `peyk:dev --stage surya
+--role <role> ...`, the outer --stage picking this module, --role picking what it does within
+it (same shape as the vlm stage's own --stage vlm --role <role>). table-full is the exception:
+not a drop-in replacement for another stage's role — it's peyk-orchestrator's dedicated dispatch
+for the tsr.backend=="surya" case when the backend that would actually OCR table cells (cell_ocr
+if set, else ocr) is also "surya" (config.py's full_surya_tables — deliberately independent of
+ocr.backend itself, which only governs non-table text), using predict_full (structure+text in
+one call per table) instead of the usual structure-then-per-cell-OCR split every other backend
+combination goes through (see pipeline.py and implementation_plan.md Task 1.5/1.8 for why
+isolated per-cell OCR is avoided when possible):
 
-    run.py --mode stage --stage layout      --input <dir> --output <dir> [--visualize]
-    run.py --mode stage --stage tsr         --input <dir> --output <dir> [--visualize]
-    run.py --mode stage --stage ocr         --input <dir> --output <dir>
-    run.py --mode stage --stage table-full  --input <dir> --output <dir>
+    run.py --mode stage --role layout      --input <dir> --output <dir> [--visualize]
+    run.py --mode stage --role tsr         --input <dir> --output <dir> [--visualize]
+    run.py --mode stage --role ocr         --input <dir> --output <dir>
+    run.py --mode stage --role table-full  --input <dir> --output <dir>
 
 Fullpage mode — one warm in-process run per document, zero layout inference, one
 RecognitionPredictor call per page. This used to offer four selectable shapes
@@ -29,7 +32,7 @@ option. What's left needs no numbered choice anymore:
 
 See implementation_plan.md Task 1.8 for the design this is built from, and backends/client.py
 for the "unconfirmed API shape" caveat that still applies to layout/tsr/table-full's predictor
-calls (ocr/--stage ocr's RecognitionPredictor shape is confirmed; see
+calls (ocr/--role ocr's RecognitionPredictor shape is confirmed; see
 _blocks_from_recognition_result's docstring).
 """
 import argparse
@@ -67,10 +70,16 @@ SHARPNESS_THRESHOLD_LAPLACIAN_VAR = 450
 CONTINUATION_MARKER = "<p>يتبع الجدول التالي من الجدول السابق</p>"
 
 # Much smaller than the general OCR concurrency: each dispatch_tsr call spawns a whole
-# `docker run --gpus all peyk-tsr:dev` that loads TableFormer onto the GPU from scratch, a far
-# heavier resource claim than the already-loaded-vLLM-server HTTP requests DEFAULT_OCR_CONCURRENCY
-# was tuned for.
-TSR_DISPATCH_SEMAPHORE = threading.Semaphore(2)
+# subprocess that loads TableFormer onto the GPU from scratch, a far heavier resource claim
+# than the already-loaded-vLLM-server HTTP requests DEFAULT_OCR_CONCURRENCY was tuned for.
+# Dropped from 2 to 1 (docs-personal/new_containerization_strategy.md step 5): observed live,
+# with peyk-vllm-surya alone already holding ~11.4GB of a 12.3GB card, two TableFormer
+# subprocesses loading concurrently — each independently trying to allocate GPU memory into
+# the same sub-1GB of remaining headroom — stalled the whole batch (100% GPU util, zero
+# forward progress) in a way a single loader at a time did not reproduce. 1 fully serializes
+# the one part of this pipeline that loads a second, independent model onto an already
+# GPU-memory-constrained card.
+TSR_DISPATCH_SEMAPHORE = threading.Semaphore(1)
 
 
 def iter_page_images(doc_path: Path, tmp_dir: Path):
@@ -98,7 +107,7 @@ def iter_page_images(doc_path: Path, tmp_dir: Path):
 
 
 # ---------------------------------------------------------------------------
-# --stage layout
+# --role layout
 # ---------------------------------------------------------------------------
 
 
@@ -207,7 +216,7 @@ def _draw_regions(image_path: Path, regions: list[Region], out_path: Path) -> No
 
 
 # ---------------------------------------------------------------------------
-# --stage tsr
+# --role tsr
 # ---------------------------------------------------------------------------
 
 
@@ -309,15 +318,15 @@ def _draw_aug(image_path: Path, rows, cols, cells: list[dict], out_path: Path) -
 
 
 # ---------------------------------------------------------------------------
-# --stage table-full
+# --role table-full
 # ---------------------------------------------------------------------------
 #
-# Not the same code path as --stage tsr: this is peyk-orchestrator's dedicated dispatch for
+# Not the same code path as --role tsr: this is peyk-orchestrator's dedicated dispatch for
 # the tsr.backend=="surya" + cell_ocr resolving to "surya" case (see pipeline.py) — instead of TableRecPredictor's
-# structure-only path + per-cell OCR (the every-other-backend-combination pattern --stage tsr
+# structure-only path + per-cell OCR (the every-other-backend-combination pattern --role tsr
 # matches), it calls predict_full: one call per table, structure AND text together, with real
 # table-wide context instead of isolated per-cell crops. Output contract is deliberately
-# different from --stage tsr's (`<crop-stem>.json` structure + `_aug.json`) — this writes
+# different from --role tsr's (`<crop-stem>.json` structure + `_aug.json`) — this writes
 # ready-to-markdownify HTML directly, since peyk-orchestrator's table-routing logic for this
 # case renders it straight into the assembled document rather than pairing structure with
 # separately-sourced cell text.
@@ -334,22 +343,39 @@ def _html_from_table_full_result(result) -> str:
 
 
 # Surya's own TableRecPredictor/vLLM client isn't confirmed thread-safe under this project's
-# concurrent ThreadPoolExecutor dispatch (run_stage_table_full) — observed live: concurrent
-# predict_full calls occasionally print Surya's own internal "Inference error: 'NoneType'
-# object has no attribute 'chat'" (a race in ITS client, not ours) and swallow the exception
-# rather than raising it, silently returning a result with an empty .html instead. Since that
-# error never reaches us as a Python exception, we can't retry on it directly — retrying
-# whenever the result comes back empty is the only lever available, same defensive shape as
-# peyk-vlm/run.py's rate-limit retry (a different failure mode, same "external call
-# occasionally fails silently under load" cause).
+# concurrent ThreadPoolExecutor dispatch (run_stage_table_full) — observed live, two distinct
+# failure modes under load, both external to our own code:
+#   1. Surya's own internal "Inference error: 'NoneType' object has no attribute 'chat'" (a
+#      race in ITS client, not ours), swallowed internally and returned as an empty .html
+#      rather than raised — retried below whenever the result comes back empty.
+#   2. peyk-vllm-surya itself (the persistent vLLM server) wedging under sustained concurrent
+#      load — observed live: requests stuck "Running" in the engine at 0 tokens/s generation
+#      throughput for multiple consecutive intervals. backends/client.py sets a shorter-than-
+#      default SURYA_INFERENCE_TIMEOUT_SECONDS so a wedged request actually raises (a real
+#      Python exception, unlike case 1) within a bounded time instead of blocking the whole
+#      batch for the library's own 600s default — retried below the same way.
+# Same defensive shape as peyk-vlm/run.py's rate-limit retry in both cases: an external call
+# occasionally fails under load, and the fix is bounded retry with backoff, not a permanent fix
+# to the external system's own internals.
 MAX_TABLE_FULL_RETRIES = 3
 TABLE_FULL_RETRY_DELAY = 2.0
 
 
 def _predict_table_full_html(image, client: SuryaClient, label: str = "") -> str:
     for attempt in range(MAX_TABLE_FULL_RETRIES + 1):
-        result = client.predict_table_full(image)
-        html = _html_from_table_full_result(result)
+        try:
+            result = client.predict_table_full(image)
+            html = _html_from_table_full_result(result)
+        except Exception as exc:
+            if attempt == MAX_TABLE_FULL_RETRIES:
+                raise
+            print(
+                f"[peyk-surya] {label}: predict_table_full raised ({type(exc).__name__}: {exc}) "
+                f"(attempt {attempt + 1}/{MAX_TABLE_FULL_RETRIES}), retrying in {TABLE_FULL_RETRY_DELAY:.1f}s...",
+                file=sys.stderr,
+            )
+            time.sleep(TABLE_FULL_RETRY_DELAY)
+            continue
         if html or attempt == MAX_TABLE_FULL_RETRIES:
             return html
         print(
@@ -479,10 +505,10 @@ def run_stage_table_full(
         print("[peyk-surya] no crop images found in input", file=sys.stderr)
         return
 
-    # workdir for any crop that needs splitting: a real subpath of input_dir's parent, which
-    # is itself a subpath of the shared workdir volume this container was launched with
-    # --volumes-from ORCHESTRATOR_CONTAINER_NAME for (see backends/tsr_dispatch.py's
-    # docstring for why this must be host-visible, not a tempfile.TemporaryDirectory()).
+    # workdir for any crop that needs splitting: a real subpath of input_dir's parent, which is
+    # itself a subpath of the shared workdir this whole process was launched with (see
+    # backends/tsr_dispatch.py's docstring for why this must be a real path under it, not a
+    # tempfile.TemporaryDirectory()).
     workdir = input_dir.parent / "table_full_split_workdir"
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -507,7 +533,7 @@ def run_stage_table_full(
 
 
 # ---------------------------------------------------------------------------
-# --stage ocr
+# --role ocr
 # ---------------------------------------------------------------------------
 
 
@@ -517,7 +543,7 @@ def _blocks_from_recognition_result(rec_result) -> list:
     guess on rec_result itself was wrong and silently produced empty text every time,
     since PageOCRResult has no such attributes). The real content lives one level down:
     each PageOCRResult has a `.blocks` list of BlockOCRResult, each with its own
-    `.html`/`.confidence`/`.error`/`.skipped`. Since --stage ocr's predict_recognition()
+    `.html`/`.confidence`/`.error`/`.skipped`. Since --role ocr's predict_recognition()
     calls always pass a single image and no layout_result, they resolve through
     RecognitionPredictor's "full page" mode (full_page=True when layout_results is None) —
     our already-cropped region/cell image is treated as a tiny "page" and its content
@@ -534,7 +560,7 @@ def _blocks_from_recognition_result(rec_result) -> list:
 
 def _text_from_recognition_result(rec_result) -> OCRResult:
     """Maps Surya's RecognitionPredictor result onto OCRResult — plain-text (tags stripped),
-    for --stage ocr's {"text", "score"} contract."""
+    for --role ocr's {"text", "score"} contract."""
     import re
 
     blocks = _blocks_from_recognition_result(rec_result)
@@ -700,51 +726,62 @@ def main() -> int:
         help="Script of the crops being processed (unused by this backend; accepted for CLI-interface parity with peyk-simple-ocr/peyk-paddleocr-vl, since peyk-orchestrator's dispatch_ocr_batch always passes --lang).",
     )
     parser.add_argument("--mode", default="stage", choices=["stage", "fullpage"], help="stage: matches one existing container's per-stage output contract. fullpage: zero layout inference, one recognition call per page (see run_fullpage's docstring for why the other three originally-planned fullpage shapes were dropped).")
-    parser.add_argument("--stage", choices=["layout", "tsr", "ocr", "table-full"], help="Required when --mode stage. table-full: predict_full (structure+text in one call) for tables, dispatched by peyk-orchestrator only when tsr.backend==surya and cell_ocr resolves to surya too — see pipeline.py.")
+    # Named --role, not --stage: this file lives under the merged peyk image's stages/surya/
+    # (docs-personal/new_containerization_strategy.md) — the OUTER dispatcher (containers/peyk/
+    # run.py) already owns --stage to pick this module in the first place (--stage surya), so
+    # this container's own layout/tsr/ocr/table-full selector needs a different flag name to
+    # avoid colliding with it. Matches the vlm stage's own --role convention (containers/peyk/
+    # stages/vlm/run.py) for the same "outer --stage picks the module, inner --role picks what
+    # it does" shape.
+    parser.add_argument("--role", choices=["layout", "tsr", "ocr", "table-full"], help="Required when --mode stage. table-full: predict_full (structure+text in one call) for tables, dispatched by peyk-orchestrator only when tsr.backend==surya and cell_ocr resolves to surya too — see pipeline.py.")
     parser.add_argument("--server-url", default=DEFAULT_SERVER_URL, help=f"Base URL of the peyk-vllm-surya server (default: {DEFAULT_SERVER_URL}).")
-    parser.add_argument("--input", required=True, type=Path, help="Directory of input documents/images/crops (meaning depends on --mode/--stage).")
+    parser.add_argument("--input", required=True, type=Path, help="Directory of input documents/images/crops (meaning depends on --mode/--role).")
     parser.add_argument("--output", required=True, type=Path, help="Directory to write output.")
     parser.add_argument("--visualize", action="store_true", help="Also write a visualization PNG, for stage in {layout, tsr}.")
     parser.add_argument(
         "--concurrency", type=int, default=DEFAULT_OCR_CONCURRENCY,
-        help=f"Max in-flight requests to the vLLM server at once — applies to every --stage (layout/tsr/ocr/table-full) and to --mode fullpage (default: {DEFAULT_OCR_CONCURRENCY}).",
+        help=f"Max in-flight requests to the vLLM server at once — applies to every --role (layout/tsr/ocr/table-full) and to --mode fullpage (default: {DEFAULT_OCR_CONCURRENCY}).",
     )
     parser.add_argument(
         "--smart-split", action=argparse.BooleanOptionalAction, default=True,
-        help="--stage table-full only: correct low-sharpness table crops via split/upscale/stitch "
+        help="--role table-full only: correct low-sharpness table crops via split/upscale/stitch "
              "(docs-personal/surya/improvement.md) before predict_full. --no-smart-split always "
              "calls predict_full directly, never measuring sharpness or splitting. Set by "
              "peyk-orchestrator from config.yaml's surya_smart_table_split.enabled.",
     )
     parser.add_argument(
         "--sharpness-threshold", type=float, default=SHARPNESS_THRESHOLD_LAPLACIAN_VAR,
-        help=f"--stage table-full only: laplacian_var below this triggers the split correction (default: {SHARPNESS_THRESHOLD_LAPLACIAN_VAR}).",
+        help=f"--role table-full only: laplacian_var below this triggers the split correction (default: {SHARPNESS_THRESHOLD_LAPLACIAN_VAR}).",
     )
     parser.add_argument(
         "--pixel-safety-margin", type=float, default=PIXEL_SAFETY_MARGIN,
-        help=f"--stage table-full only: fraction of peyk-vllm-surya's max_pixels actually targeted when upscaling a split chunk (default: {PIXEL_SAFETY_MARGIN}).",
+        help=f"--role table-full only: fraction of peyk-vllm-surya's max_pixels actually targeted when upscaling a split chunk (default: {PIXEL_SAFETY_MARGIN}).",
     )
     parser.add_argument(
         "--max-upscale-cap", type=float, default=MAX_UPSCALE_CAP,
-        help=f"--stage table-full only: ceiling on upscale factor applied to a split chunk (default: {MAX_UPSCALE_CAP}).",
+        help=f"--role table-full only: ceiling on upscale factor applied to a split chunk (default: {MAX_UPSCALE_CAP}).",
     )
     parser.add_argument(
         "--min-scale", type=float, default=MIN_SCALE,
-        help=f"--stage table-full only: floor on scale factor applied to a split chunk; 1.0 = never downscale (default: {MIN_SCALE}).",
+        help=f"--role table-full only: floor on scale factor applied to a split chunk; 1.0 = never downscale (default: {MIN_SCALE}).",
     )
     args = parser.parse_args()
 
-    if args.mode == "stage" and args.stage is None:
-        parser.error("--stage is required when --mode stage")
+    if args.mode == "stage" and args.role is None:
+        parser.error("--role is required when --mode stage")
 
     if not args.input.is_dir():
         parser.error(f"--input {args.input} is not a directory")
     args.output.mkdir(parents=True, exist_ok=True)
 
-    role_by_stage = {"layout": {"layout"}, "tsr": {"table_rec"}, "ocr": {"recognition"}, "table-full": {"table_rec"}}
+    # Maps this CLI's --role choice to SuryaClient.load()'s own "predictor roles" concept
+    # (layout/table_rec/recognition — which of Surya's predictor classes to construct) — an
+    # unrelated, pre-existing use of the word "role" one level down, not the CLI flag renamed
+    # above.
+    predictor_roles_by_cli_role = {"layout": {"layout"}, "tsr": {"table_rec"}, "ocr": {"recognition"}, "table-full": {"table_rec"}}
     # Fullpage mode is down to one shape now (see run_fullpage's docstring) — always just
-    # "recognition", no layout/table_rec roles to conditionally load anymore.
-    roles = role_by_stage[args.stage] if args.mode == "stage" else {"recognition"}
+    # "recognition", no layout/table_rec predictor roles to conditionally load anymore.
+    roles = predictor_roles_by_cli_role[args.role] if args.mode == "stage" else {"recognition"}
 
     client = SuryaClient(server_url=args.server_url)
     print(f"[peyk-surya] connecting to {args.server_url} (roles: {sorted(roles)})...", file=sys.stderr)
@@ -756,13 +793,13 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         if args.mode == "stage":
-            if args.stage == "layout":
+            if args.role == "layout":
                 run_stage_layout(client, args.input, args.output, args.visualize, tmp_dir, args.concurrency)
-            elif args.stage == "tsr":
+            elif args.role == "tsr":
                 run_stage_tsr(client, args.input, args.output, args.visualize, args.concurrency)
-            elif args.stage == "ocr":
+            elif args.role == "ocr":
                 run_stage_ocr(client, args.input, args.output, args.concurrency)
-            elif args.stage == "table-full":
+            elif args.role == "table-full":
                 run_stage_table_full(
                     client, args.input, args.output, args.concurrency,
                     smart_split=args.smart_split, sharpness_threshold=args.sharpness_threshold,
