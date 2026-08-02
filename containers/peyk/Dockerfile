@@ -1,9 +1,11 @@
-# Merged layout+tsr+ocr worker (docs-personal/new_containerization_strategy.md) — the three
+# Merged worker (docs-personal/new_containerization_strategy.md) — layout+tsr+ocr's three
 # source Dockerfiles (peyk-layout, peyk-tsr, peyk-simple-ocr) were already near-identical: same
 # CUDA base, same paddlepaddle-gpu==3.3.0 + torch==2.12.1/torchvision==0.27.1 cu126 pin, same
-# apt deps, differing only in which stage's backends/ + weight-baking steps got copied in. This
-# Dockerfile is the union of all three; --stage at runtime (see run.py) picks which one actually
-# executes.
+# apt deps, differing only in which stage's backends/ + weight-baking steps got copied in. dcr
+# and vlm (former peyk-dcr, peyk-vlm) need no GPU at all (pure pypdfium2 text extraction / remote
+# cloud API clients) but share this same image rather than a separate GPU/non-GPU split — see
+# the design doc for why one merged worker, not several, is the target shape. --stage at runtime
+# (see run.py) picks which stage actually executes.
 FROM nvidia/cuda:12.9.2-base-ubuntu22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -94,10 +96,12 @@ easyocr.Reader(['ar', 'en'], gpu=False); \
 easyocr.Reader(['en'], gpu=False)"
 
 # Separate COPY per stage (not one `COPY stages/ stages/`) so editing one stage's code doesn't
-# invalidate the other two stages' cached layer.
+# invalidate the other stages' cached layer.
 COPY stages/layout stages/layout
 COPY stages/tsr stages/tsr
 COPY stages/ocr stages/ocr
+COPY stages/dcr stages/dcr
+COPY stages/vlm stages/vlm
 COPY run.py .
 
 ENTRYPOINT ["python3", "run.py"]
