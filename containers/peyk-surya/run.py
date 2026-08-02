@@ -333,9 +333,32 @@ def _html_from_table_full_result(result) -> str:
     return getattr(result, "html", None) or getattr(result, "text", "") or ""
 
 
-def _predict_table_full_html(image, client: SuryaClient) -> str:
-    result = client.predict_table_full(image)
-    return _html_from_table_full_result(result)
+# Surya's own TableRecPredictor/vLLM client isn't confirmed thread-safe under this project's
+# concurrent ThreadPoolExecutor dispatch (run_stage_table_full) — observed live: concurrent
+# predict_full calls occasionally print Surya's own internal "Inference error: 'NoneType'
+# object has no attribute 'chat'" (a race in ITS client, not ours) and swallow the exception
+# rather than raising it, silently returning a result with an empty .html instead. Since that
+# error never reaches us as a Python exception, we can't retry on it directly — retrying
+# whenever the result comes back empty is the only lever available, same defensive shape as
+# peyk-vlm/run.py's rate-limit retry (a different failure mode, same "external call
+# occasionally fails silently under load" cause).
+MAX_TABLE_FULL_RETRIES = 3
+TABLE_FULL_RETRY_DELAY = 2.0
+
+
+def _predict_table_full_html(image, client: SuryaClient, label: str = "") -> str:
+    for attempt in range(MAX_TABLE_FULL_RETRIES + 1):
+        result = client.predict_table_full(image)
+        html = _html_from_table_full_result(result)
+        if html or attempt == MAX_TABLE_FULL_RETRIES:
+            return html
+        print(
+            f"[peyk-surya] {label}: predict_table_full returned empty (attempt {attempt + 1}/{MAX_TABLE_FULL_RETRIES}), "
+            f"retrying in {TABLE_FULL_RETRY_DELAY:.1f}s...",
+            file=sys.stderr,
+        )
+        time.sleep(TABLE_FULL_RETRY_DELAY)
+    return ""
 
 
 def _split_and_recognize(
@@ -380,7 +403,7 @@ def _split_and_recognize(
         safe_upscale(chunk_image, max_upscale_cap=max_upscale_cap, min_scale=min_scale, pixel_safety_margin=pixel_safety_margin)
         for chunk_image, _ in chunk_images_and_indices
     ]
-    chunk_htmls = [_predict_table_full_html(chunk_image, client) for chunk_image in scaled_images]
+    chunk_htmls = [_predict_table_full_html(chunk_image, client, label=f"{crop_stem} chunk {i}") for i, chunk_image in enumerate(scaled_images)]
     chunk_grids = [parse_html_table(html) for html in chunk_htmls]
 
     if axis == "rows":
@@ -417,7 +440,7 @@ def _process_crop_table_full(
     image = Image.open(crop_path).convert("RGB")
 
     if not smart_split:
-        html = _predict_table_full_html(image, client)
+        html = _predict_table_full_html(image, client, label=crop_path.stem)
         out_path = output_dir / f"{crop_path.stem}.json"
         out_path.write_text(json.dumps({"crop": crop_path.name, "model": "surya", "html": html}, indent=2, ensure_ascii=False))
         return
@@ -425,7 +448,7 @@ def _process_crop_table_full(
     lap_var = laplacian_variance(image)
 
     if lap_var >= sharpness_threshold:
-        html = _predict_table_full_html(image, client)
+        html = _predict_table_full_html(image, client, label=crop_path.stem)
     else:
         print(f"[peyk-surya] {crop_path.stem}: laplacian_var={lap_var:.1f} < {sharpness_threshold} — splitting", file=sys.stderr)
         try:
@@ -438,7 +461,7 @@ def _process_crop_table_full(
             # docstring). The direct call below is deliberately NOT wrapped: if it fails too,
             # run_stage_table_full's per-crop handler skips this one crop, as before.
             print(f"[peyk-surya] {crop_path.stem}: split-and-recognize failed ({type(exc).__name__}: {exc}) — falling back to direct recognition", file=sys.stderr)
-            html = _predict_table_full_html(image, client)
+            html = _predict_table_full_html(image, client, label=crop_path.stem)
 
     out_path = output_dir / f"{crop_path.stem}.json"
     out_path.write_text(json.dumps({"crop": crop_path.name, "model": "surya", "html": html}, indent=2, ensure_ascii=False))
