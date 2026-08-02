@@ -29,3 +29,9 @@ rapidocr>=3.0
 
 # Tesseract backend (ocr) — CPU-only, no GPU acceleration path exists in mainline Tesseract.
 pytesseract==0.3.13
+
+# vlm stage — remote cloud LLM API clients (Bedrock, Vertex AI), no local model/GPU deps.
+boto3>=1.35                 # stages/vlm/backends/bedrock.py
+google-genai>=0.7           # stages/vlm/backends/vertex_gemini.py
+google-auth>=2.35           # stages/vlm/backends/vertex_maas.py (bearer-token auth for the OpenAI-compatible MaaS endpoint)
+openai>=1.63                # stages/vlm/backends/vertex_maas.py (same OpenAI-compatible-client pattern peyk-paddleocr-vl uses)
