@@ -10,7 +10,8 @@ import yaml
 from stages import list_vlm_models
 
 
-# Which image each classical ocr model runs in — see containers/peyk-simple-ocr/ and
+# Which image each classical ocr model runs in — see containers/peyk/ (the merged
+# layout+tsr+ocr worker, docs-personal/new_containerization_strategy.md) and
 # containers/peyk-paddleocr-vl/ (the split rationale is in implementation_plan.md Task 1.3).
 # Derived automatically from `model` rather than requiring `image` in the yaml too: the
 # pairing is fully determined by the model choice, so making both configurable independently
@@ -19,10 +20,10 @@ from stages import list_vlm_models
 # whatever image/model string it's given.
 OCR_MODEL_IMAGES = {
     "paddleocr-vl": "peyk-paddleocr-vl:dev",
-    "paddleocr": "peyk-simple-ocr:dev",
-    "easyocr": "peyk-simple-ocr:dev",
-    "rapidocr": "peyk-simple-ocr:dev",
-    "tesseract": "peyk-simple-ocr:dev",
+    "paddleocr": "peyk:dev",
+    "easyocr": "peyk:dev",
+    "rapidocr": "peyk:dev",
+    "tesseract": "peyk:dev",
     "surya": "peyk-surya:dev",
 }
 
@@ -32,9 +33,9 @@ OCR_MODEL_IMAGES = {
 # with an image mapping as if it were a real option. layout has no peyk-vlm option at all —
 # no VLM in this project does region detection/layout analysis.
 LAYOUT_MODEL_IMAGES = {
-    "pp-doclayout-v2": "peyk-layout:dev",
-    "doclayout-yolo": "peyk-layout:dev",
-    "heron": "peyk-layout:dev",
+    "pp-doclayout-v2": "peyk:dev",
+    "doclayout-yolo": "peyk:dev",
+    "heron": "peyk:dev",
     "surya": "peyk-surya:dev",
 }
 
@@ -45,11 +46,11 @@ LAYOUT_MODEL_IMAGES = {
 # valid here on its own; a peyk-vlm model is only ever valid for tsr when cell_ocr resolves to
 # that exact same model too (full_table_backend below) — enforced by _validate_tsr_and_cell_ocr.
 TSR_MODEL_IMAGES = {
-    "tatr": "peyk-tsr:dev",
-    "rapidtable": "peyk-tsr:dev",
-    "pp-structure-general": "peyk-tsr:dev",
-    "pp-structure-wiring": "peyk-tsr:dev",
-    "tableformer": "peyk-tsr:dev",
+    "tatr": "peyk:dev",
+    "rapidtable": "peyk:dev",
+    "pp-structure-general": "peyk:dev",
+    "pp-structure-wiring": "peyk:dev",
+    "tableformer": "peyk:dev",
     "surya": "peyk-surya:dev",
 }
 

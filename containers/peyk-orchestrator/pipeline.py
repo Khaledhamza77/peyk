@@ -150,12 +150,11 @@ def _cached_page_image(path: Path, cache: dict[Path, Image.Image]) -> Image.Imag
 def run_layout(config: PipelineConfig, input_dir: Path, workdir: Path) -> dict[str, dict]:
     """Batch layout over every document in input_dir. Returns {doc_stem: regions_json}."""
     out_dir = workdir / "layout_out"
-    # peyk-surya's run.py needs an explicit --stage layout to know which of its three roles
-    # to serve — every other layout model's image only ever does one thing, so this is a
-    # no-op for them (see implementation_plan.md Task 1.8).
-    extra_args = ["--visualize"]
-    if config.layout.backend == "surya":
-        extra_args += ["--stage", "layout"]
+    # Every layout backend's image (peyk:dev, the merged layout+tsr+ocr worker, or
+    # peyk-surya:dev) now needs an explicit --stage layout to know which role to serve —
+    # unconditional, not backend-specific, since both images multiplex more than one role
+    # behind the same entrypoint (see containers/peyk/run.py, containers/peyk-surya/run.py).
+    extra_args = ["--visualize", "--stage", "layout"]
     run_docker_stage(
         image=config.layout.image,
         model=config.layout.backend,
@@ -336,9 +335,10 @@ def dispatch_tsr_batch(tsr_batch: list[tuple[str, str, Path]], config: PipelineC
         dest = tsr_in / f"{doc_stem}__{local_id}{crop_path.suffix}"
         dest.write_bytes(crop_path.read_bytes())
     tsr_out = workdir / "tsr_out"
-    extra_args = ["--visualize"]
-    if config.tsr.backend == "surya":
-        extra_args += ["--stage", "tsr"]
+    # Every classical tsr backend's image (peyk:dev) and surya's own (peyk-surya:dev) both
+    # multiplex more than one role behind the same entrypoint, so --stage tsr is unconditional
+    # here — see run_layout's comment above for the same reasoning.
+    extra_args = ["--visualize", "--stage", "tsr"]
     run_docker_stage(
         image=config.tsr.image,
         model=config.tsr.backend,
@@ -549,7 +549,11 @@ def dispatch_ocr_batch(
         ocr_extra_args = ["--lang", stage_config.lang]
         if stage_config.server_url:
             ocr_extra_args += ["--server-url", stage_config.server_url]
-        if backend == "surya":
+        # peyk-paddleocr-vl:dev is the one remaining classical-OCR image that does ONE thing
+        # and has no --stage flag at all; every other classical backend's image (peyk:dev, the
+        # merged layout+tsr+ocr worker) or surya's own (peyk-surya:dev) multiplexes more than
+        # one role behind the same entrypoint and needs --stage ocr to pick this one.
+        if backend != "paddleocr-vl":
             ocr_extra_args += ["--stage", "ocr"]
         extra_docker_args = None
     ocr_out = workdir / out_dir_name
