@@ -22,7 +22,10 @@ from pathlib import Path
 # sibling stage containers already do.
 PEYK_NETWORK = "peyk-net"
 ORCHESTRATOR_CONTAINER_NAME = "peyk-orchestrator-run"
-TSR_IMAGE = "peyk-tsr:dev"
+# peyk-tsr:dev was merged into peyk:dev (the merged layout+tsr+ocr worker — see
+# docs-personal/new_containerization_strategy.md and containers/peyk/); --stage tsr picks the
+# tsr role out of that image the same way peyk-orchestrator's own pipeline.py now does.
+TSR_IMAGE = "peyk:dev"
 
 
 def dispatch_tsr(image_path: Path, workdir: Path) -> dict:
@@ -61,6 +64,7 @@ def dispatch_tsr(image_path: Path, workdir: Path) -> dict:
             "--model", "tableformer",
             "--input", str(in_dir),
             "--output", str(out_dir),
+            "--stage", "tsr",
         ],
         check=True,
         # Bounded so a hung sibling can't stall the whole batch forever. Generous: one crop's
