@@ -102,8 +102,8 @@ def process_doc(doc_path: Path, backend, model: str, output_dir: Path, tmp_dir: 
 
         # Persisted unconditionally, not just under --visualize: peyk-orchestrator reuses this
         # raw render for cropping instead of rasterizing the same PDF page a second time at the
-        # same RENDER_SCALE DPI (see that container's pipeline.py) — previously genuine
-        # duplicate rasterization work across both containers on every document.
+        # same RENDER_SCALE DPI (see that stage's pipeline.py) — previously genuine duplicate
+        # rasterization work across both stages (then separate containers) on every document.
         raw_path = output_dir / f"{doc_path.stem}_p{page_index}_raw.png"
         shutil.copyfile(image_path, raw_path)
 

@@ -23,7 +23,7 @@ bbox is in the same raster-pixel space (top-left origin, RENDER_SCALE DPI) that
 peyk-orchestrator's layout regions use — see pipeline.py's RENDER_SCALE.
 
 Writes "<id>.json" per output (one per whole-region entry, or one per column per row entry),
-matching the OCR containers' output shape ({"text": ...}) so peyk-orchestrator can assemble
+matching the OCR stages' output shape ({"text": ...}) so peyk-orchestrator can assemble
 either path the same way.
 """
 import argparse

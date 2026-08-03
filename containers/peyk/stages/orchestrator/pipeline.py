@@ -61,7 +61,7 @@ def normalize_digits(text: str, lang: str = "arabic") -> str:
 
 
 def load_rendered_pages(doc_stem: str, layout_out_dir: Path) -> dict[int, Path]:
-    """Loads peyk-layout's own raw per-page renders (see that container's run.py) instead of
+    """Loads peyk-layout's own raw per-page renders (see that stage's run.py) instead of
     rasterizing the PDF a second time at the same RENDER_SCALE DPI for cropping — peyk-layout
     already renders every page at this exact scale for its own inference; re-rendering here
     was pure duplicate work repeated on every document (see docs/build_notes.md's efficiency
@@ -78,9 +78,9 @@ def render_pdf_pages(doc_path: Path, out_dir: Path) -> dict[int, Path]:
     """Rasterizes doc_path's pages directly via pypdfium2 at RENDER_SCALE, same call
     peyk-layout's own iter_page_images() makes (`page.render(scale=RENDER_SCALE).to_pil()`) —
     used only by the fullpage job (config.fullpage), which has no region-detection use for
-    peyk-layout's actual model inference at all. Running the full peyk-layout container
+    peyk-layout's actual model inference at all. Running the full peyk-layout stage
     (a real GPU model pass over every page) purely to get its raw-render side effect would be
-    paying for and discarding the one part of that container's output this job doesn't need —
+    paying for and discarding the one part of that stage's output this job doesn't need —
     rendering itself is plain rasterization, no model involved, so it's done here directly
     instead. Every other job still gets its renders from peyk-layout's own output
     (load_rendered_pages above) since they need its region detection anyway."""
@@ -254,7 +254,7 @@ def prepare_document(
     to copy later (see dispatch_ocr_batch's docstring for why that copy used to exist and why
     it was real, avoidable waste for a table with 100+ cells)."""
     doc_stem = doc_path.stem
-    # Reuses peyk-layout's own raw per-page renders (workdir/layout_out — see that container's
+    # Reuses peyk-layout's own raw per-page renders (workdir/layout_out — see that stage's
     # run.py) rather than rasterizing the same PDF pages a second time at the same RENDER_SCALE
     # DPI purely for cropping. Also the only render pass now — OCR crops come from it too (see
     # RENDER_SCALE's comment above for why the old second, higher-DPI OCR render was dropped).
@@ -717,9 +717,14 @@ def dispatch_documents(docs: list[Path], layout_results: dict[str, dict], config
     # with whole-region crops exactly as before — one combined dispatch, no extra model-load
     # cost. Override configured: cells get their own dir/batch/dispatch, so an isolated cell
     # crop never reaches whatever (possibly VLM-style) model config.ocr uses — see
-    # implementation_plan.md Task 1.5.
+    # implementation_plan.md Task 1.5. A configured cell_ocr that resolves to the exact same
+    # StageConfig as ocr (dataclass equality on image/backend/lang/server_url) is treated the
+    # same as no override: under DooD this redundant split cost nothing extra (both dispatches
+    # were already-isolated containers paying model-load cost regardless), but in-process it
+    # would load the same local model (e.g. easyocr/paddleocr/tableformer-class weights) twice
+    # in the same run for no behavioral difference.
     cell_ocr_config = config.cell_ocr if config.cell_ocr is not None else config.ocr
-    using_separate_cell_ocr = config.cell_ocr is not None
+    using_separate_cell_ocr = config.cell_ocr is not None and config.cell_ocr != config.ocr
     if using_separate_cell_ocr:
         cell_ocr_in = workdir / "cell_ocr_in"
         if cell_ocr_in.exists():
@@ -747,7 +752,7 @@ def dispatch_documents(docs: list[Path], layout_results: dict[str, dict], config
 
     t0 = time.perf_counter()
     tsr_out = dispatch_tsr_batch(tsr_batch, config, workdir)
-    print(f"[peyk-orchestrator] dispatch_tsr_batch (docker run): {time.perf_counter() - t0:.2f}s", file=sys.stderr)
+    print(f"[peyk-orchestrator] dispatch_tsr_batch (dispatch): {time.perf_counter() - t0:.2f}s", file=sys.stderr)
 
     t0 = time.perf_counter()
     tsr_structures_by_doc = {
@@ -761,20 +766,20 @@ def dispatch_documents(docs: list[Path], layout_results: dict[str, dict], config
     # whole run. See dispatch_table_full_batch/assemble_document.
     t0 = time.perf_counter()
     table_full_results_by_doc = dispatch_table_full_batch(table_full_batch, config, workdir)
-    print(f"[peyk-orchestrator] dispatch_table_full_batch (docker run): {time.perf_counter() - t0:.2f}s", file=sys.stderr)
+    print(f"[peyk-orchestrator] dispatch_table_full_batch (dispatch): {time.perf_counter() - t0:.2f}s", file=sys.stderr)
 
     t0 = time.perf_counter()
     ocr_results_by_doc = dispatch_ocr_batch(ocr_batch, config.ocr, workdir, ocr_in)
-    print(f"[peyk-orchestrator] dispatch_ocr_batch (docker run): {time.perf_counter() - t0:.2f}s", file=sys.stderr)
+    print(f"[peyk-orchestrator] dispatch_ocr_batch (dispatch): {time.perf_counter() - t0:.2f}s", file=sys.stderr)
 
     t0 = time.perf_counter()
     figures_results_by_doc = dispatch_figures_batch(figures_batch, config, workdir, figures_in)
-    print(f"[peyk-orchestrator] dispatch_figures_batch (docker run): {time.perf_counter() - t0:.2f}s", file=sys.stderr)
+    print(f"[peyk-orchestrator] dispatch_figures_batch (dispatch): {time.perf_counter() - t0:.2f}s", file=sys.stderr)
 
     if using_separate_cell_ocr:
         t0 = time.perf_counter()
         cell_ocr_results_by_doc = dispatch_ocr_batch(cell_ocr_batch, cell_ocr_config, workdir, cell_ocr_in, out_dir_name="cell_ocr_out")
-        print(f"[peyk-orchestrator] dispatch_cell_ocr_batch (docker run): {time.perf_counter() - t0:.2f}s", file=sys.stderr)
+        print(f"[peyk-orchestrator] dispatch_cell_ocr_batch (dispatch): {time.perf_counter() - t0:.2f}s", file=sys.stderr)
         # Cell ids ("r{idx}_c{cell_i}"/"r{idx}_row{row}") and whole-region ids ("r{idx}") never
         # collide, so merging per doc_stem is safe.
         for doc_stem, cell_results in cell_ocr_results_by_doc.items():

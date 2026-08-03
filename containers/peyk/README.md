@@ -1,9 +1,11 @@
 # peyk
 
-Merged worker image (docs-personal/new_containerization_strategy.md) — one `--stage` flag
-picks which role runs: `layout`, `tsr`, `ocr`, `dcr`, or `vlm`. Each stage's code lives
-unmodified under `stages/<stage>/`, copied in from its original single-purpose image
-(`peyk-layout`, `peyk-tsr`, `peyk-simple-ocr`, `peyk-dcr`, `peyk-vlm`).
+Merged worker+orchestrator image (docs-personal/new_containerization_strategy.md) — one
+`--stage` flag picks which role runs: `layout`, `tsr`, `ocr`, `dcr`, `vlm`, `surya`,
+`paddleocr-vl`, or `orchestrator` (the default). Each stage's code lives unmodified under
+`stages/<stage>/`, copied in from its original single-purpose image (`peyk-layout`, `peyk-tsr`,
+`peyk-simple-ocr`, `peyk-dcr`, `peyk-vlm`, `peyk-surya`, `peyk-paddleocr-vl`,
+`peyk-orchestrator`).
 
 This README currently documents only the `vlm` stage's credential/model details (carried over
 from `peyk-vlm`'s own README) — the other stages don't need any local setup beyond the image

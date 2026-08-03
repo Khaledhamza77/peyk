@@ -58,11 +58,12 @@ TSR_MODEL_IMAGES = {
     "surya": "peyk:dev",
 }
 
-# peyk-paddleocr-vl's default --server-url already matches this (see that container's
+# peyk-paddleocr-vl's default --server-url already matches this (see that stage's
 # run.py), so this only matters if peyk-vllm-paddleocr is reachable at a different address.
 DEFAULT_VLLM_SERVER_URL = "http://peyk-vllm-paddleocr:8118/v1"
 
-# Same reasoning, for peyk-surya against peyk-vllm-surya (see that container's start.sh/README).
+# Same reasoning, for the surya stage against the still-separate peyk-vllm-surya sidecar
+# container (see that container's start.sh/README).
 DEFAULT_SURYA_SERVER_URL = "http://peyk-vllm-surya:8000/v1"
 
 # peyk-vlm's vlm stage (see containers/peyk/stages/vlm/backends/registry.py) serves many

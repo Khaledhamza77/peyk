@@ -151,7 +151,7 @@ def regularized_cells(structure: TableStructure, rows: list[RowBox], cols: list[
 class TSRBackend(ABC):
     """Common interface every table-structure-recognition backend must implement.
     Structure only, no text: peyk-orchestrator pairs cell bboxes with peyk-dcr (born-digital)
-    or the OCR containers (scanned) itself, rather than this container calling out to either —
+    or the OCR stages (scanned) itself, rather than this stage calling out to either —
     see pipeline.md / implementation_plan.md Task 1.5."""
 
     name: str
