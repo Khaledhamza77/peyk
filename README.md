@@ -7,18 +7,20 @@ deployment (API, queue, GPU worker) is planned but not yet built.
 
 See [docs-personal/pipeline.md](docs-personal/pipeline.md) for the full pipeline design and
 model rationale, [docs-personal/poc_architecture.md](docs-personal/poc_architecture.md) /
-[poc_architecture.mmd](docs-personal/poc_architecture.mmd) for the target cloud architecture, and
+[poc_architecture.mmd](docs-personal/poc_architecture.mmd) for the target cloud architecture,
 [docs-personal/implementation_plan.md](docs-personal/implementation_plan.md) for detailed,
-checkbox-level build status.
+checkbox-level build status, and
+[docs-personal/new_containerization_strategy.md](docs-personal/new_containerization_strategy.md)
+for the 10 → 3 image consolidation that produced the current container layout below.
 
 ## Status
 
 - **Phase 1 (containerization & local testing): in progress, core pipeline working end to end.**
-  All nine containers below run and have been verified through real `peyk-orchestrator`
-  dispatch against a sample document (`data/cib_sample.pdf`, Arabic financial statement).
-  Remaining gaps: broader document-family coverage (only Family A tested so far), scanned-doc
-  coverage (only born-digital tested, scanned simulated via a config override), and pushing
-  images to ECR.
+  The pipeline runs as 3 containers (below) with no docker-outside-of-docker — `peyk` dispatches
+  every stage in-process and calls out to the two persistent vLLM sidecars over HTTP. Verified
+  against 5 sample PDFs spanning born-digital, scanned, Latin, and Arabic documents. Remaining
+  gaps: broader document-family coverage (only Family A tested so far), and pushing images to
+  ECR.
 - **Phase 2-5 (CloudFormation IaC, AWS deployment, SDK/CLI, demo readiness): not started.**
 
 ## Pipeline
@@ -34,44 +36,43 @@ is deferred to its own pipeline.
 
 | Container | Role |
 |---|---|
-| `peyk-layout` | Layout Understanding — region detection + classification. Backends: **Heron** (default), PP-DocLayoutV2, DocLayout-YOLO, Surya. |
-| `peyk-dcr` | Digital Character Recognition — direct text extraction from a born-digital PDF's text layer. No model. |
-| `peyk-simple-ocr` | Self-hosted OCR, in-process backends: PaddleOCR, EasyOCR, RapidOCR, Tesseract. |
-| `peyk-paddleocr-vl` | Thin HTTP client for the PaddleOCR-VL-0.9B backend (talks to `peyk-vllm-paddleocr`). |
-| `peyk-vllm-paddleocr` | Persistent vLLM sidecar serving PaddleOCR-VL-0.9B (started once, not dispatched per-stage). |
-| `peyk-surya` | Client for Surya-OCR-2, a single VLM covering layout/TSR/OCR via different prompts (talks to `peyk-vllm-surya`); also a standalone full-page transcription mode. |
-| `peyk-vllm-surya` | Persistent vLLM sidecar serving Surya-OCR-2. |
-| `peyk-tsr` | Table Structure Recognition, self-hosted. Backends: **TableFormer** (default), PP-StructureV3 (general/wiring), RapidTable, TATR, Surya. |
-| `peyk-vlm` | The one container calling a managed LLM API — Bedrock (Claude, Nova) or Vertex AI in a private GCP project (Gemini, DeepSeek-OCR). Four roles: `ocr`, `figure` description, `table` (structure+text together), `fullpage` transcription. |
-| `peyk-orchestrator` | Config-driven dispatcher — reads `config/example.yaml`, does the born-digital-vs-scanned check, dispatches the other containers per region/page, and assembles the final Markdown. |
+| `peyk` | Merged worker + orchestrator. One `--stage` flag picks which role runs: `layout`, `tsr`, `ocr`, `dcr`, `vlm`, `surya`, `paddleocr-vl`, or `orchestrator` (the default) — every stage dispatches in-process, no docker-outside-of-docker. See [containers/peyk/README.md](containers/peyk/README.md). |
+| `peyk-vllm-surya` | Persistent vLLM sidecar serving Surya-OCR-2 (layout/TSR/OCR via a single VLM, plus full-table and full-page transcription). |
+| `peyk-vllm-paddleocr` | Persistent vLLM sidecar serving PaddleOCR-VL-0.9B. |
+
+Originally 10 separate images (one per stage, wired together via docker-outside-of-docker); see
+`docs-personal/new_containerization_strategy.md` for the full consolidation history, including
+why the two vLLM sidecars are kept separate rather than merged further (investigated and
+decided against — different vendor images/vLLM builds, no compelling value beyond disk usage).
 
 ## Model selection
 
-`peyk-orchestrator` is entirely config-driven (`containers/peyk-orchestrator/config/example.yaml`)
-— each pipeline job (`layout`, `tsr`, `ocr`, `cell_ocr`, `figures`, optionally `fullpage`) names
-a `model`, and the orchestrator resolves which container/backend to dispatch. Current defaults:
-layout → Heron, TSR → TableFormer, OCR → PaddleOCR-VL, figures → a Vertex Gemini model. Any
-`peyk-vlm`-backed model (Bedrock or Vertex) can substitute into `ocr`/`tsr`/`figures`/`fullpage`
-directly by name; run `docker run --rm peyk-vlm:dev --list-models` for the full live list.
+`peyk`'s orchestrator stage is entirely config-driven
+(`containers/peyk/stages/orchestrator/config/example.yaml`) — each pipeline job (`layout`,
+`tsr`, `ocr`, `cell_ocr`, `figures`, optionally `fullpage`) names a `model`, and the orchestrator
+resolves which backend to dispatch. Current defaults: layout → Heron, TSR → TableFormer, OCR →
+PaddleOCR-VL, figures → a Vertex Gemini model. Any `vlm`-backed model (Bedrock or Vertex) can
+substitute into `ocr`/`tsr`/`figures`/`fullpage` directly by name; run
+`docker run --rm peyk:dev --stage vlm --list-models` for the full live list.
 
 ## Privacy constraint
 
 Self-hostable, or a managed LLM API running inside a private-cloud account boundary you control
-— no public/anonymous vendor APIs. `peyk-vlm` supports both AWS Bedrock and Vertex AI (in a
-private GCP project), with cross-cloud credentials held as real secrets, not hardcoded.
+— no public/anonymous vendor APIs. `peyk`'s `vlm` stage supports both AWS Bedrock and Vertex AI
+(in a private GCP project), with cross-cloud credentials held as real secrets, not hardcoded.
 
 ## Running locally
 
-Requires Docker with GPU support (NVIDIA CUDA + WSL2 on Windows) for the GPU-backed containers.
+Requires Docker with GPU support (NVIDIA CUDA + WSL2 on Windows).
 
-1. Build each container under `containers/` (`docker build`).
-2. Start the persistent OCR sidecars you need (`containers/peyk-vllm-paddleocr/start.sh` and/or
-   `containers/peyk-vllm-surya/start.sh`).
+1. Build the merged worker image: `docker build -t peyk:dev containers/peyk`.
+2. Start the persistent vLLM sidecars you need (`containers/peyk-vllm-paddleocr/start.sh`
+   and/or `containers/peyk-vllm-surya/start.sh`).
 3. Drop a PDF into `hotstorage/input/`.
-4. Run `containers/peyk-orchestrator/run_local.sh` — dispatches the configured pipeline via
-   docker-outside-of-docker and writes assembled Markdown to `hotstorage/output/`.
+4. Run `containers/peyk/run_local.sh` — dispatches the configured pipeline (one container, no
+   docker socket) and writes assembled Markdown to `hotstorage/output/`.
 
-Config lives at `containers/peyk-orchestrator/config/example.yaml`; override with
+Config lives at `containers/peyk/stages/orchestrator/config/example.yaml`; override with
 `PEYK_CONFIG=<path>`. See that file's comments for every job's available models.
 
 ## License
