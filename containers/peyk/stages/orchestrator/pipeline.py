@@ -159,7 +159,6 @@ def run_layout(config: PipelineConfig, input_dir: Path, workdir: Path) -> dict[s
     else:
         extra_args = ["--visualize", "--stage", "layout"]
     run_docker_stage(
-        image=config.layout.image,
         model=config.layout.backend,
         input_dir=input_dir,
         output_dir=out_dir,
@@ -345,7 +344,6 @@ def dispatch_tsr_batch(tsr_batch: list[tuple[str, str, Path]], config: PipelineC
     else:
         extra_args = ["--visualize", "--stage", "tsr"]
     run_docker_stage(
-        image=config.tsr.image,
         model=config.tsr.backend,
         input_dir=tsr_in,
         output_dir=tsr_out,
@@ -365,9 +363,9 @@ def dispatch_table_full_batch(
     text) plays no part in this condition — non-table text always goes through
     dispatch_ocr_batch/config.ocr regardless of whether tables were routed here. Returns
     {doc_stem: {local_id: html}} — ready HTML per table, rendered directly by
-    assemble_document rather than paired with separately-sourced cell text. config.tsr.image/
-    backend are reused here (guaranteed to match full_table_backend's own resolved model)
-    rather than adding a third stage config for this."""
+    assemble_document rather than paired with separately-sourced cell text. config.tsr's own
+    backend is reused here (guaranteed to match full_table_backend's own resolved model) rather
+    than adding a third stage config for this."""
     if not table_full_batch:
         return {}
     table_full_in = workdir / "table_full_in"
@@ -404,7 +402,6 @@ def dispatch_table_full_batch(
         _validate_vlm_credentials(backend)
         extra_args = ["--stage", "vlm", "--role", "table"]
     run_docker_stage(
-        image=config.tsr.image,
         model=backend,
         input_dir=table_full_in,
         output_dir=table_full_out,
@@ -566,7 +563,6 @@ def dispatch_ocr_batch(
             ocr_extra_args += ["--stage", "paddleocr-vl" if backend == "paddleocr-vl" else "ocr"]
     ocr_out = workdir / out_dir_name
     run_docker_stage(
-        image=stage_config.image,
         model=backend,
         input_dir=ocr_in,
         output_dir=ocr_out,
@@ -590,7 +586,6 @@ def dispatch_figures_batch(figures_batch: list[tuple[str, str]], config: Pipelin
     _validate_vlm_credentials(config.figures.backend)
     figures_out = workdir / "figures_out"
     run_docker_stage(
-        image=config.figures.image,
         model=config.figures.backend,
         input_dir=figures_in,
         output_dir=figures_out,
@@ -621,7 +616,6 @@ def dispatch_dcr(doc_path: Path, dcr_targets: list[dict], config: PipelineConfig
     (dcr_in / "manifest.json").write_text(json.dumps(dcr_targets))
     dcr_out = workdir / "dcr_out" / doc_stem
     run_docker_stage(
-        image=config.dcr.image,
         model=None,
         input_dir=dcr_in,
         output_dir=dcr_out,

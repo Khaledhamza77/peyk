@@ -1,6 +1,6 @@
-"""Pipeline config: which model/image each job uses. Every job's model must be explicitly
-configured — there's no "stub" concept anymore (that was only ever a placeholder for a stage
-whose container hadn't been built yet; all seven now exist)."""
+"""Pipeline config: which model each job uses. Every job's model must be explicitly configured
+— there's no "stub" concept anymore (that was only ever a placeholder for a stage whose
+container hadn't been built yet; all seven now exist)."""
 import functools
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,38 +10,25 @@ import yaml
 from stages import list_vlm_models
 
 
-# Which image each classical ocr model runs in — all of them now resolve to peyk:dev (the
-# merged worker, docs-personal/new_containerization_strategy.md — layout/tsr/ocr/dcr/vlm/surya/
-# paddleocr-vl all live under its stages/, split rationale for the *models* themselves is in
-# implementation_plan.md Task 1.3). Kept as an explicit per-model dict rather than collapsed
-# to a single constant for now — still the validation mechanism for "is this a recognized
-# model", and each entry's own --stage/--role dispatch differs (see pipeline.py); revisit
-# once every entry converges (tracked as the consolidation plan's own step 7). Derived
-# automatically from `model` rather than requiring `image` in the yaml too: the pairing is
-# fully determined by the model choice, so making both configurable independently just invites
-# a config that sets model: paddleocr-vl but forgets to also flip image (or vice versa) — a
-# mismatch `run_docker_stage` has no way to catch, since it just docker-runs whatever
-# image/model string it's given.
-OCR_MODEL_IMAGES = {
-    "paddleocr-vl": "peyk:dev",
-    "paddleocr": "peyk:dev",
-    "easyocr": "peyk:dev",
-    "rapidocr": "peyk:dev",
-    "tesseract": "peyk:dev",
-    "surya": "peyk:dev",
-}
+# Recognized model names per stage — every one of them now lives under peyk:dev (the merged
+# worker, docs-personal/new_containerization_strategy.md), so there's no longer an actual image
+# to select per model; these sets exist purely to validate `model:` against a known-good list
+# (split rationale for the *models* themselves is in implementation_plan.md Task 1.3). Used to
+# be `{model: image}` dicts (every value "peyk:dev", since step 4 folded surya/paddleocr-vl in)
+# — collapsed to plain sets once step 5/7 confirmed `run_docker_stage`'s own `image` parameter
+# was never anything but a pass-through no-op (see stages.py): --stage/--role selection is
+# hardcoded per dispatch function in pipeline.py based on `backend`, not derived from an image
+# lookup at all, so keeping a fake per-model "image" around just to validate model names was
+# dead indirection once every entry pointed at the same image anyway (tracked as the
+# consolidation plan's own step 8).
+OCR_MODELS = frozenset({"paddleocr-vl", "paddleocr", "easyocr", "rapidocr", "tesseract", "surya"})
 
-# Same derivation for layout. "surya-layout" (peyk-layout's own unimplemented stub backend,
-# unrelated to this project's real Surya integration) is deliberately not included here: it
-# would raise NotImplementedError at runtime if selected, so it shouldn't be silently blessed
-# with an image mapping as if it were a real option. layout has no peyk-vlm option at all —
-# no VLM in this project does region detection/layout analysis.
-LAYOUT_MODEL_IMAGES = {
-    "pp-doclayout-v2": "peyk:dev",
-    "doclayout-yolo": "peyk:dev",
-    "heron": "peyk:dev",
-    "surya": "peyk:dev",
-}
+# Same set for layout. "surya-layout" (peyk-layout's own unimplemented stub backend, unrelated
+# to this project's real Surya integration) is deliberately not included here: it would raise
+# NotImplementedError at runtime if selected, so it shouldn't be silently blessed as if it were
+# a real option. layout has no peyk-vlm option at all — no VLM in this project does region
+# detection/layout analysis.
+LAYOUT_MODELS = frozenset({"pp-doclayout-v2", "doclayout-yolo", "heron", "surya"})
 
 # tsr (table STRUCTURE recognition, no text) similarly has no bare peyk-vlm option — every
 # peyk-vlm model's "table" role always does structure+text together in one call (see its
@@ -49,14 +36,7 @@ LAYOUT_MODEL_IMAGES = {
 # (a real structure-only TableRecPredictor stage, and predict_full for structure+text) so it's
 # valid here on its own; a peyk-vlm model is only ever valid for tsr when cell_ocr resolves to
 # that exact same model too (full_table_backend below) — enforced by _validate_tsr_and_cell_ocr.
-TSR_MODEL_IMAGES = {
-    "tatr": "peyk:dev",
-    "rapidtable": "peyk:dev",
-    "pp-structure-general": "peyk:dev",
-    "pp-structure-wiring": "peyk:dev",
-    "tableformer": "peyk:dev",
-    "surya": "peyk:dev",
-}
+TSR_MODELS = frozenset({"tatr", "rapidtable", "pp-structure-general", "pp-structure-wiring", "tableformer", "surya"})
 
 # peyk-paddleocr-vl's default --server-url already matches this (see that stage's
 # run.py), so this only matters if peyk-vllm-paddleocr is reachable at a different address.
@@ -65,19 +45,6 @@ DEFAULT_VLLM_SERVER_URL = "http://peyk-vllm-paddleocr:8118/v1"
 # Same reasoning, for the surya stage against the still-separate peyk-vllm-surya sidecar
 # container (see that container's start.sh/README).
 DEFAULT_SURYA_SERVER_URL = "http://peyk-vllm-surya:8000/v1"
-
-# peyk-vlm's vlm stage (see containers/peyk/stages/vlm/backends/registry.py) serves many
-# models via --model — unlike OCR_MODEL_IMAGES/TSR_MODEL_IMAGES's per-model dict, any model it
-# itself reports supporting (see _vlm_models below) derives this single image (peyk:dev, the
-# merged worker — --stage vlm picks this role out of it, see pipeline.py/run.py). Used by
-# ocr/cell_ocr, tsr (the full-table combination only), figures, and fullpage alike.
-DEFAULT_VLM_IMAGE = "peyk:dev"
-
-# peyk-dcr's dcr stage has no model concept at all (one approach, pure pypdfium2 extraction) —
-# its image is always this, never configurable via yaml. No job's image should ever need to
-# appear in example.yaml; every one is either derived from model (above, and OCR_MODEL_IMAGES/
-# LAYOUT_MODEL_IMAGES/TSR_MODEL_IMAGES) or, for dcr, simply fixed.
-DEFAULT_DCR_IMAGE = "peyk:dev"
 
 
 @functools.lru_cache(maxsize=1)
@@ -122,7 +89,6 @@ class SmartSplitConfig:
 
 @dataclass
 class StageConfig:
-    image: str | None = None
     backend: str | None = None  # the chosen model's name (yaml field is called `model`)
     lang: str = "arabic"
     server_url: str | None = None  # ocr only: peyk-paddleocr-vl's/peyk-surya's vLLM-style server URL
@@ -156,56 +122,32 @@ class PipelineConfig:
 
 def _stage(raw: dict) -> StageConfig:
     return StageConfig(
-        image=raw.get("image"),
         backend=raw.get("model"),
         lang=raw.get("lang", "arabic"),
         server_url=raw.get("server_url"),
     )
 
 
-def _stage_with_image(raw: dict, image_map: dict[str, str]) -> StageConfig:
-    """Plain dict-only image derivation — deliberately does NOT fall back to DEFAULT_VLM_IMAGE
-    for an unrecognized model, unlike _stage_with_image_or_vlm below. Used for layout, which
-    must never resolve a peyk-vlm model to an image at all (no VLM in this project does region
-    detection) — leaving stage.image as None for any unrecognized model, including a
-    peyk-vlm-shaped one, is exactly what lets _layout_stage's own check below catch and reject
-    it with a clear error instead of silently treating it as valid."""
-    stage = _stage(raw)
-    if stage.image is not None:
-        return stage
-    if stage.backend in image_map:
-        stage.image = image_map[stage.backend]
-    return stage
-
-
-def _stage_with_image_or_vlm(raw: dict, image_map: dict[str, str]) -> StageConfig:
-    """Like _stage_with_image, but also derives DEFAULT_VLM_IMAGE for any model peyk-vlm itself
-    reports supporting (is_vlm_model, real registry check — see _vlm_models) — used by tsr/ocr,
-    which DO have a legitimate (if constrained — see _validate_tsr_and_cell_ocr) peyk-vlm
-    option, unlike layout."""
-    stage = _stage_with_image(raw, image_map)
-    if stage.image is None and is_vlm_model(stage.backend):
-        stage.image = DEFAULT_VLM_IMAGE
-    return stage
-
-
 def _layout_stage(raw: dict) -> StageConfig:
-    stage = _stage_with_image(raw, LAYOUT_MODEL_IMAGES)
-    if stage.image is None:
+    stage = _stage(raw)
+    # No peyk-vlm fallback, unlike _tsr_stage/_ocr_stage below — layout can never be done by a
+    # peyk-vlm model, no VLM in this project does region detection, so an unrecognized backend
+    # is always an error here, never a valid-but-different case.
+    if stage.backend not in LAYOUT_MODELS:
         raise ValueError(
             f"layout.model {stage.backend!r} is not a recognized layout model "
-            f"({sorted(LAYOUT_MODEL_IMAGES)}) — layout can never be done by a peyk-vlm model, "
+            f"({sorted(LAYOUT_MODELS)}) — layout can never be done by a peyk-vlm model, "
             "no VLM in this project does region detection."
         )
     return stage
 
 
 def _tsr_stage(raw: dict) -> StageConfig:
-    stage = _stage_with_image_or_vlm(raw, TSR_MODEL_IMAGES)
-    if stage.image is None:
+    stage = _stage(raw)
+    if stage.backend not in TSR_MODELS and not is_vlm_model(stage.backend):
         raise ValueError(
             f"tsr.model {stage.backend!r} is not a recognized tsr model "
-            f"({sorted(TSR_MODEL_IMAGES)}) or a peyk-vlm model key."
+            f"({sorted(TSR_MODELS)}) or a peyk-vlm model key."
         )
     return stage
 
@@ -221,8 +163,6 @@ def _figures_stage(raw: dict) -> StageConfig:
             f"figures.model {stage.backend!r} is not a recognized peyk-vlm model "
             f"({sorted(_vlm_models())})."
         )
-    if stage.image is None and stage.backend is not None:
-        stage.image = DEFAULT_VLM_IMAGE
     return stage
 
 
@@ -235,12 +175,6 @@ def _fullpage_stage(raw: dict | None) -> StageConfig | None:
             f"fullpage.model {stage.backend!r} is not 'surya' or a recognized peyk-vlm model "
             f"({sorted(_vlm_models())})."
         )
-    if stage.image is None:
-        # Both "surya" and every peyk-vlm model now resolve to the same merged worker image —
-        # kept as an explicit assignment (not simplified to always DEFAULT_VLM_IMAGE) since the
-        # two cases still dispatch via different extra_args (--stage surya --mode fullpage vs.
-        # --stage vlm --role fullpage — see run.py's _run_fullpage).
-        stage.image = "peyk:dev"
     return stage
 
 
@@ -258,20 +192,17 @@ def _smart_split_config(raw: dict) -> SmartSplitConfig:
 
 
 def _dcr_stage(raw: dict) -> StageConfig:
-    """peyk-dcr's image is always DEFAULT_DCR_IMAGE — never configurable via yaml, since there's
-    no model choice to derive it from at all (see that constant's comment)."""
-    stage = _stage(raw)
-    if stage.image is None:
-        stage.image = DEFAULT_DCR_IMAGE
-    return stage
+    """dcr has no model concept at all (one approach, pure pypdfium2 extraction) — nothing to
+    validate or derive, just here for symmetry with every other _X_stage constructor."""
+    return _stage(raw)
 
 
 def _ocr_stage(raw: dict) -> StageConfig:
-    stage = _stage_with_image_or_vlm(raw, OCR_MODEL_IMAGES)
-    if stage.image is None:
+    stage = _stage(raw)
+    if stage.backend not in OCR_MODELS and not is_vlm_model(stage.backend):
         raise ValueError(
             f"ocr.model/cell_ocr.model {stage.backend!r} is not a recognized ocr model "
-            f"({sorted(OCR_MODEL_IMAGES)}) or a peyk-vlm model key."
+            f"({sorted(OCR_MODELS)}) or a peyk-vlm model key."
         )
     if stage.backend == "paddleocr-vl" and stage.server_url is None:
         stage.server_url = DEFAULT_VLLM_SERVER_URL

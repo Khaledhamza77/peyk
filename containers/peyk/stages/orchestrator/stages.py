@@ -20,19 +20,20 @@ class StageDispatchError(RuntimeError):
 
 
 def run_docker_stage(
-    image: str,
     model: str | None,
     input_dir: Path,
     output_dir: Path,
     extra_args: list[str] | None = None,
 ) -> None:
-    """`image` is vestigial (every stage now lives in this same process — there's no longer a
-    separate image to select) but kept as a parameter so config.py's per-model image maps (see
-    that file's own note on why they're not collapsed yet) don't need to change shape just to
-    drop it; accepted and ignored. `extra_args` must include a leading "--stage <name>" — every
-    caller in pipeline.py/run.py already builds this — that's what selects which sibling stage
-    actually runs; everything else in extra_args passes straight through to that stage's own
-    argv, unchanged from before."""
+    """`extra_args` must include a leading "--stage <name>" — every caller in pipeline.py/run.py
+    already builds this — that's what selects which sibling stage actually runs; everything
+    else in extra_args passes straight through to that stage's own argv, unchanged from before.
+    No `image` parameter (there used to be one, docs-personal/new_containerization_strategy.md
+    step 8): every stage now lives in this same process, and --stage/--role selection was
+    already hardcoded per dispatch function in pipeline.py based on `model`/backend, never
+    actually derived from an image lookup — the parameter was accepted and silently ignored
+    from step 5 onward, kept only so config.py's per-model image maps didn't need to change
+    shape. Those maps are gone too now (see config.py's OCR_MODELS/LAYOUT_MODELS/TSR_MODELS)."""
     # Cleared rather than just mkdir(exist_ok=True): callers match results back by reading
     # every *.json this stage writes, so a stale file left over from an earlier run at the
     # same path (e.g. a region index no longer dispatched to this stage) would silently be

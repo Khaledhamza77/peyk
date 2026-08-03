@@ -52,7 +52,6 @@ def _run_fullpage(config, args: argparse.Namespace) -> int:
         # this run actually produced.
         surya_out = args.workdir / "fullpage_out"
         run_docker_stage(
-            image=config.fullpage.image,
             model="surya",
             input_dir=args.input,
             output_dir=surya_out,
@@ -84,7 +83,6 @@ def _run_fullpage(config, args: argparse.Namespace) -> int:
     _validate_vlm_credentials(model)
     fullpage_out = args.workdir / "fullpage_out"
     run_docker_stage(
-        image=config.fullpage.image,
         model=model,
         input_dir=fullpage_in,
         output_dir=fullpage_out,
