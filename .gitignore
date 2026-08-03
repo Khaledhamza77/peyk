@@ -220,11 +220,11 @@ __marimo__/
 
 # personal
 docs-personal/
-containers/peyk-orchestrator/_test/
 containers/peyk-tsr/_test/
 kk_dockerfile/
-containers/peyk-vlm/gcp-key.json
+containers/peyk/gcp-key.json
+z_surya_exploration/
 
-# Local/EC2 hot-storage dir for peyk-orchestrator's job input/output/intermediate artifacts
-# (see containers/peyk-orchestrator/run_local.sh) — ephemeral by design, never committed.
+# Local/EC2 hot-storage dir for peyk's job input/output/intermediate artifacts (see
+# containers/peyk/run_local.sh) — ephemeral by design, never committed.
 /hotstorage

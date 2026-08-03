@@ -1,9 +1,10 @@
 # peyk-vllm-paddleocr
 
-Persistent vLLM server for PaddleOCR-VL-0.9B. `peyk-paddleocr-vl` (the OCR stage container)
-is an HTTP client against this; it does not run inside `peyk-orchestrator`'s normal per-stage
-`docker run --rm` lifecycle (see `stages.py`) because it needs to stay warm across runs
-instead of paying model-load cost every invocation.
+Persistent vLLM server for PaddleOCR-VL-0.9B. The `paddleocr-vl` stage (lives in
+`containers/peyk/stages/paddleocr-vl/`, part of the merged `peyk` image since
+docs-personal/new_containerization_strategy.md) is an HTTP client against this; it stays a
+separate, persistent container rather than being folded into `peyk` too, because it needs to
+stay warm across runs instead of paying model-load cost every invocation.
 
 ## Start
 
@@ -45,7 +46,7 @@ PaddleX's built-in `DocVLMGenAIClientPredictor` already knows how to speak to (v
 ## GPU memory
 
 `vllm_config.yml` caps `gpu_memory_utilization` at **0.7**, leaving the rest of the card free
-for `peyk-layout`/`peyk-simple-ocr`/`peyk-tsr`'s per-stage `--gpus all` runs. 0.35 was tried
+for `peyk`'s own `--gpus all` run (layout/tsr/classical-ocr stages). 0.35 was tried
 first and failed outright: vLLM's own `torch.compile`/CUDA-graph capture for this model already
 exceeds a 0.35 budget before any KV cache is allocated ("Available KV cache memory: -1.98 GiB").
 Adjust down only after also shrinking `max_model_len`/`max_num_batched_tokens` (see

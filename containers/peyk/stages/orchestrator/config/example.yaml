@@ -1,0 +1,57 @@
+# Pipeline config for peyk-orchestrator. Each section below is one job; `model` picks which
+# model runs it. Full peyk-vlm model list: `docker run --rm peyk:dev --stage vlm --list-models`.
+
+# Detects page regions (text / table / figure).
+layout:
+  model: heron  # or: pp-doclayout-v2 | doclayout-yolo | surya
+
+# Table structure recognition (rows/columns, no text). A peyk-vlm model is only valid here
+# when paired with the SAME model on cell_ocr below (combined structure+text in one call).
+tsr:
+  model: surya # tatr | rapidtable | pp-structure-general | pp-structure-wiring | tableformer | surya | a peyk-vlm model
+
+# Scanned/non-born-digital text recognition.
+ocr:
+  model: gemini-3-1-flash-lite  # or: easyocr | rapidocr | tesseract | paddleocr-vl | surya | a peyk-vlm model
+  lang: arabic
+
+# Table-cell text recognition. Optional — omit to inherit ocr.model. surya/a peyk-vlm model is
+# only valid here if it matches tsr.model exactly (see tsr above); isolated cell crops sent to
+# either otherwise produce unreliable results.
+cell_ocr:
+  model: surya
+
+# Q1-Q4 correction algorithm for Surya's full-table recognition (predict_full) on blurry/
+# low-quality table crops — see docs-personal/surya/improvement.md. Only takes effect when tsr
+# and cell_ocr both resolve to "surya" (Surya's full-table predict_full path); ignored otherwise.
+surya_smart_table_split:
+  enabled: true  # false: always call predict_full directly — never measure sharpness or split
+  sharpness_threshold_laplacian_var: 450  # below this, a crop is treated as blurred and split
+  pixel_safety_margin: 0.97   # fraction of peyk-vllm-surya's max_pixels actually targeted
+  max_upscale_cap: 2.0        # ceiling on upscale factor applied to each split chunk
+  min_scale: 1.0              # floor on scale factor (1.0 = never downscale)
+
+# Describes figure/chart/stamp/photo regions. peyk-vlm only.
+figures:
+  model: gemini-3-1-flash-lite
+
+# Born-digital vs. scanned page detection.
+born_digital:
+  min_chars_per_page: 20
+  force_scanned: true
+
+# Optional: bypass the whole per-region pipeline above and transcribe each page directly,
+# one model call per page. model: surya renders PDFs itself; any peyk-vlm model renders pages
+# first, then transcribes.
+# fullpage:
+#   model: gemini-3-5-flash
+
+# peyk-vlm supported models:
+# Tier 1
+# claude-sonnet-4-5, claude-sonnet-4-6, claude-opus-4-5, claude-opus-4-6
+# gemini-2-5-flash, gemini-2-5-flash-lite, gemini-2-5-pro, gemini-3-flash, gemini-3-1-flash-lite, gemini-3-1-pro, gemini-3-5-flash
+# Tier 2
+# kimi-k2-5
+# claude-haiku
+# Tier 3
+# deepseek-ocr, nova-lite, nova-pro, pixtral-large
