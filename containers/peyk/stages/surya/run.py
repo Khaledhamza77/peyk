@@ -429,7 +429,20 @@ def _split_and_recognize(
         safe_upscale(chunk_image, max_upscale_cap=max_upscale_cap, min_scale=min_scale, pixel_safety_margin=pixel_safety_margin)
         for chunk_image, _ in chunk_images_and_indices
     ]
-    chunk_htmls = [_predict_table_full_html(chunk_image, client, label=f"{crop_stem} chunk {i}") for i, chunk_image in enumerate(scaled_images)]
+    # Concurrent across this table's own chunks (never split more than once today, so 2 at
+    # once) — independent HTTP calls to the same server, no reason to pay their latency
+    # sequentially. Bounded by len(scaled_images) rather than the caller's general concurrency
+    # knob deliberately: this table is already being processed on its own, one table at a time
+    # (see run_stage_table_full), specifically to avoid stacking several tables' worth of
+    # large/upscaled images — the most expensive requests this stage makes — concurrently
+    # against peyk-vllm-surya's encoder cache. ThreadPoolExecutor.map preserves input order, so
+    # chunk_htmls stays aligned with scaled_images/expected_counts for stitching below.
+    def _predict_chunk(indexed_image) -> str:
+        i, chunk_image = indexed_image
+        return _predict_table_full_html(chunk_image, client, label=f"{crop_stem} chunk {i}")
+
+    with ThreadPoolExecutor(max_workers=len(scaled_images)) as chunk_pool:
+        chunk_htmls = list(chunk_pool.map(_predict_chunk, enumerate(scaled_images)))
     chunk_grids = [parse_html_table(html) for html in chunk_htmls]
 
     if axis == "rows":
@@ -460,18 +473,26 @@ def _process_crop_table_full(
     crop_path: Path, client: SuryaClient, output_dir: Path, workdir: Path,
     smart_split: bool, sharpness_threshold: float,
     max_upscale_cap: float, min_scale: float, pixel_safety_margin: float,
+    _preopened: tuple | None = None,
 ) -> None:
+    """_preopened: (image, lap_var) — lets run_stage_table_full's upfront sharp/blurry
+    classification pass (which already has to open every crop and compute laplacian_variance
+    to decide which lane a crop goes to) hand both straight through instead of this function
+    redundantly re-decoding the same crop a second time. None (the default) preserves the
+    original self-contained behavior for any other caller."""
     from PIL import Image
 
-    image = Image.open(crop_path).convert("RGB")
+    if _preopened is not None:
+        image, lap_var = _preopened
+    else:
+        image = Image.open(crop_path).convert("RGB")
+        lap_var = laplacian_variance(image) if smart_split else None
 
     if not smart_split:
         html = _predict_table_full_html(image, client, label=crop_path.stem)
         out_path = output_dir / f"{crop_path.stem}.json"
         out_path.write_text(json.dumps({"crop": crop_path.name, "model": "surya", "html": html}, indent=2, ensure_ascii=False))
         return
-
-    lap_var = laplacian_variance(image)
 
     if lap_var >= sharpness_threshold:
         html = _predict_table_full_html(image, client, label=crop_path.stem)
@@ -512,24 +533,87 @@ def run_stage_table_full(
     workdir = input_dir.parent / "table_full_split_workdir"
     workdir.mkdir(parents=True, exist_ok=True)
 
-    # Each table's predict_full call is independent of every other table's — same batching
-    # rationale as run_stage_ocr/run_stage_tsr. The 3-table celebrated end-to-end test
-    # (implementation_plan.md Task 1.8) ran sequentially and took 21.78s doing so; this stands
-    # to shrink meaningfully for documents with more tables once dispatched concurrently.
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {
-            pool.submit(
-                _process_crop_table_full, crop_path, client, output_dir, workdir,
-                smart_split, sharpness_threshold, max_upscale_cap, min_scale, pixel_safety_margin,
-            ): crop_path
-            for crop_path in crops
-        }
-        for future in tqdm(as_completed(futures), total=len(futures), desc="[peyk-surya] table-full", unit="table", file=sys.stderr):
-            crop_path = futures[future]
+    if not smart_split:
+        # No blur classification in play at all — every crop is equally cheap (a single
+        # unupscaled image each), so the plain shared pool from before is still the right
+        # shape. Each table's predict_full call is independent of every other table's — same
+        # batching rationale as run_stage_ocr/run_stage_tsr.
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = {
+                pool.submit(
+                    _process_crop_table_full, crop_path, client, output_dir, workdir,
+                    False, sharpness_threshold, max_upscale_cap, min_scale, pixel_safety_margin,
+                ): crop_path
+                for crop_path in crops
+            }
+            for future in tqdm(as_completed(futures), total=len(futures), desc="[peyk-surya] table-full", unit="table", file=sys.stderr):
+                crop_path = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    tqdm.write(f"[peyk-surya] {crop_path.name} failed: {e}", file=sys.stderr)
+        return
+
+    # smart_split=True: classify every crop up front (one open + laplacian_variance each,
+    # cheap, CPU-only, no model call) into two lanes instead of letting the shared pool below
+    # dispatch a mix of cheap and expensive requests in whatever order ThreadPoolExecutor
+    # happens to schedule them:
+    #   - blurry crops go through Q2-Q4's split-and-upscale correction path (_split_and_
+    #     recognize), sending 2+ large, upscaled images per table — the most expensive
+    #     requests this stage makes.
+    #   - sharp crops are sent directly, one modest-sized image each, same as the smart_split=
+    #     False case above.
+    # Letting several blurry tables' large images run concurrently against each other (as the
+    # single shared pool used to) is exactly what was saturating peyk-vllm-surya's encoder
+    # cache — a separate, much smaller budget than its 8.2GiB KV cache — under real load: once
+    # enough concurrent large images piled up, new requests queued behind them, and a single
+    # stuck occupant blocked everything else sharing that budget. Blurry tables are instead
+    # processed one table at a time (sequential across tables — natural given TSR_DISPATCH_
+    # SEMAPHORE already serializes each one's TSR call anyway), with only that one table's own
+    # chunks (2 today) sent concurrently to each other (see _split_and_recognize). Sharp crops,
+    # unaffected by any of this, keep the full `concurrency`-wide shared pool.
+    from PIL import Image
+
+    sharp_crops: list[Path] = []
+    blurry_crops: list[tuple[Path, "Image.Image", float]] = []
+    for crop_path in crops:
+        image = Image.open(crop_path).convert("RGB")
+        lap_var = laplacian_variance(image)
+        if lap_var >= sharpness_threshold:
+            sharp_crops.append(crop_path)
+        else:
+            blurry_crops.append((crop_path, image, lap_var))
+
+    with tqdm(total=len(crops), desc="[peyk-surya] table-full", unit="table", file=sys.stderr) as bar:
+        for crop_path, image, lap_var in blurry_crops:
+            # _process_crop_table_full itself prints the "splitting" line once it re-checks
+            # lap_var < sharpness_threshold below — not duplicated here.
             try:
-                future.result()
+                _process_crop_table_full(
+                    crop_path, client, output_dir, workdir,
+                    True, sharpness_threshold, max_upscale_cap, min_scale, pixel_safety_margin,
+                    _preopened=(image, lap_var),
+                )
             except Exception as e:
                 tqdm.write(f"[peyk-surya] {crop_path.name} failed: {e}", file=sys.stderr)
+            bar.update(1)
+
+        if sharp_crops:
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                futures = {
+                    pool.submit(
+                        _process_crop_table_full, crop_path, client, output_dir, workdir,
+                        False, sharpness_threshold, max_upscale_cap, min_scale, pixel_safety_margin,
+                    ): crop_path
+                    for crop_path in sharp_crops
+                }
+                for future in as_completed(futures):
+                    crop_path = futures[future]
+                    try:
+                        future.result()
+                    except Exception as e:
+                        tqdm.write(f"[peyk-surya] {crop_path.name} failed: {e}", file=sys.stderr)
+                    bar.update(1)
 
 
 # ---------------------------------------------------------------------------
@@ -720,12 +804,12 @@ def run_fullpage(client: SuryaClient, input_dir: Path, output_dir: Path, tmp_dir
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Surya-OCR-2 (via a vLLM server) in stage or fullpage mode.")
-    parser.add_argument("--model", default="surya", choices=["surya"], help="Backend to use (only one exists; kept for CLI-interface parity with other containers).")
+    parser.add_argument("--model", default="surya", choices=["surya"], help="Backend to use (only one exists; kept for CLI-interface parity with other stages).")
     parser.add_argument(
         "--lang", default="arabic", choices=["arabic", "latin"],
         help="Script of the crops being processed (unused by this backend; accepted for CLI-interface parity with peyk-simple-ocr/peyk-paddleocr-vl, since peyk-orchestrator's dispatch_ocr_batch always passes --lang).",
     )
-    parser.add_argument("--mode", default="stage", choices=["stage", "fullpage"], help="stage: matches one existing container's per-stage output contract. fullpage: zero layout inference, one recognition call per page (see run_fullpage's docstring for why the other three originally-planned fullpage shapes were dropped).")
+    parser.add_argument("--mode", default="stage", choices=["stage", "fullpage"], help="stage: matches every other stage's per-stage output contract. fullpage: zero layout inference, one recognition call per page (see run_fullpage's docstring for why the other three originally-planned fullpage shapes were dropped).")
     # Named --role, not --stage: this file lives under the merged peyk image's stages/surya/
     # (docs-personal/new_containerization_strategy.md) — the OUTER dispatcher (containers/peyk/
     # run.py) already owns --stage to pick this module in the first place (--stage surya), so
