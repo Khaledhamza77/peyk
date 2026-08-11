@@ -1,6 +1,10 @@
 """Pipeline config: which model each job uses. Every job's model must be explicitly configured
 — there's no "stub" concept anymore (that was only ever a placeholder for a stage whose
-container hadn't been built yet; all seven now exist)."""
+container hadn't been built yet; all seven now exist) — EXCEPT when `fullpage` is set: run.py's
+main() returns via _run_fullpage before layout/tsr/ocr/figures (the normal per-region path) are
+ever dispatched, so load_config() skips real validation of those sections entirely in that case
+(see load_config's own branch) rather than demanding configuration for jobs that will never
+actually run."""
 import functools
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -286,7 +290,32 @@ def _validate_tsr_and_cell_ocr(config: PipelineConfig) -> None:
 
 def load_config(path: Path) -> PipelineConfig:
     raw = yaml.safe_load(path.read_text())
+    fullpage = _fullpage_stage(raw.get("fullpage"))
     cell_ocr_raw = raw.get("cell_ocr")
+
+    if fullpage is not None:
+        # run.py's main() checks config.fullpage and returns via _run_fullpage BEFORE
+        # run_layout/dispatch_documents (the normal per-region path) ever run — layout/tsr/ocr/
+        # figures are never dispatched in this case, so their sections are optional here and
+        # parsed with the bare, unvalidated _stage() (same as _dcr_stage) rather than
+        # _layout_stage/_tsr_stage/_ocr_stage/_figures_stage, which would otherwise demand a
+        # real model choice for a job that will never actually run. cell_ocr is equally
+        # irrelevant to fullpage (full_table_backend's tsr/cell_ocr pairing only matters to the
+        # per-region path), so it's parsed the same unvalidated way rather than via _ocr_stage.
+        # _validate_tsr_and_cell_ocr is skipped entirely for the same reason.
+        return PipelineConfig(
+            layout=_stage(raw.get("layout", {})),
+            ocr=_stage(raw.get("ocr", {})),
+            dcr=_dcr_stage(raw.get("dcr", {})),
+            tsr=_stage(raw.get("tsr", {})),
+            figures=_stage(raw.get("figures", {})),
+            cell_ocr=_stage(cell_ocr_raw) if cell_ocr_raw else None,
+            surya_smart_table_split=_smart_split_config(raw.get("surya_smart_table_split", {})),
+            born_digital_min_chars=raw.get("born_digital", {}).get("min_chars_per_page", 20),
+            force_scanned=raw.get("born_digital", {}).get("force_scanned", False),
+            fullpage=fullpage,
+        )
+
     config = PipelineConfig(
         layout=_layout_stage(raw["layout"]),
         ocr=_ocr_stage(raw["ocr"]),
@@ -297,7 +326,7 @@ def load_config(path: Path) -> PipelineConfig:
         surya_smart_table_split=_smart_split_config(raw.get("surya_smart_table_split", {})),
         born_digital_min_chars=raw.get("born_digital", {}).get("min_chars_per_page", 20),
         force_scanned=raw.get("born_digital", {}).get("force_scanned", False),
-        fullpage=_fullpage_stage(raw.get("fullpage")),
+        fullpage=None,
     )
     _validate_tsr_and_cell_ocr(config)
     return config

@@ -48,6 +48,19 @@ DEFAULT_CONCURRENCY = 8
 # class, so this matches on the shared shape (an HTTP 429, or one of the provider-specific
 # strings each surfaces) rather than importing all three SDKs' exception types here.
 _RATE_LIMIT_MARKERS = ("429", "RESOURCE_EXHAUSTED", "ThrottlingException", "TooManyRequests", "rate limit")
+# Same reasoning, for transient network/timeout failures — a slow-but-eventually-successful
+# call (a role="table" full-table generation is a genuinely long single request, see
+# bedrock.py's own Config comment) or a dropped connection, not a guaranteed-to-fail-again
+# error like a bad image or an auth failure. Matched on message text (botocore's
+# ReadTimeoutError/ConnectTimeoutError, requests'/urllib3's own timeout exceptions, and
+# google-genai/openai's own transport-level errors all render one of these substrings) rather
+# than importing every SDK's specific timeout exception type here, same as _RATE_LIMIT_MARKERS
+# above. A real timeout observed live in implementation_plan.md's run log: a Bedrock table call
+# that had been generating for a while, past botocore's old unconfigured 60s read_timeout,
+# never got retried at all under the old rate-limit-only check — it just failed the image
+# outright with no output written (see process_batch's own comment on why that's loud, not
+# silent).
+_TRANSIENT_MARKERS = ("Read timeout", "Connect timeout", "ConnectionError", "ConnectionResetError", "EndpointConnectionError")
 MAX_RETRIES = 5
 RETRY_BASE_DELAY = 2.0
 
@@ -59,22 +72,29 @@ def _is_rate_limited(exc: Exception) -> bool:
     return any(marker in text for marker in _RATE_LIMIT_MARKERS)
 
 
+def _is_transient(exc: Exception) -> bool:
+    text = str(exc)
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
 def predict_with_retry(backend, image_path: Path, role: str):
-    """Retries only on rate-limit-shaped failures, with exponential backoff + jitter (the
-    jitter spreads retries from concurrent workers apart instead of having them all wake up
-    and re-hit the API at the same instant). Any other exception (bad image, auth failure, ...)
-    propagates immediately — retrying those would just burn the same number of calls for the
-    same guaranteed failure."""
+    """Retries on rate-limit- or timeout/connection-shaped failures, with exponential backoff +
+    jitter (the jitter spreads retries from concurrent workers apart instead of having them all
+    wake up and re-hit the API at the same instant). Any other exception (bad image, auth
+    failure, ...) propagates immediately — retrying those would just burn the same number of
+    calls for the same guaranteed failure."""
     for attempt in range(MAX_RETRIES + 1):
         try:
             return backend.predict(image_path, role)
         except Exception as exc:
-            if attempt == MAX_RETRIES or not _is_rate_limited(exc):
+            rate_limited = _is_rate_limited(exc)
+            if attempt == MAX_RETRIES or not (rate_limited or _is_transient(exc)):
                 raise
             delay = RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, RETRY_BASE_DELAY)
+            reason = "rate-limited" if rate_limited else "a transient error"
             print(
-                f"[peyk-vlm] {image_path.name} rate-limited (attempt {attempt + 1}/{MAX_RETRIES}), "
-                f"retrying in {delay:.1f}s...",
+                f"[peyk-vlm] {image_path.name} hit {reason} (attempt {attempt + 1}/{MAX_RETRIES}), "
+                f"retrying in {delay:.1f}s... ({exc})",
                 file=sys.stderr,
             )
             time.sleep(delay)

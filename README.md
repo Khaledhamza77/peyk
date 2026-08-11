@@ -75,6 +75,57 @@ Requires Docker with GPU support (NVIDIA CUDA + WSL2 on Windows).
 Config lives at `containers/peyk/stages/orchestrator/config/example.yaml`; override with
 `PEYK_CONFIG=<path>`. See that file's comments for every job's available models.
 
+## Python SDK
+
+[`sdk/`](sdk/) is a pip-installable package (`peyk`) that configures, orchestrates, and runs the
+containers above programmatically instead of by hand — a Python equivalent of
+`containers/peyk-vllm-surya/start.sh` + `containers/peyk-vllm-paddleocr/start.sh` +
+`containers/peyk/run_local.sh`, talking to Docker via
+[docker-py](https://docker-py.readthedocs.io/) rather than shelling out (so none of those
+scripts' MSYS/Windows path-rewriting workarounds are needed).
+
+### Setup
+
+Requires [`uv`](https://docs.astral.sh/uv/). The repo root is a
+[uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/) with `sdk/` as its one
+member — from the repo root, run once:
+
+```
+uv sync --extra notebook
+```
+
+This creates `.venv` at the repo root and installs `sdk/` into it editable, along with its `dev`
+extra (pytest, for the SDK's own tests) and the root project's `notebook` extra (jupyter/
+ipykernel, for `demo.ipynb` below) — the same venv the SDK's own tests, `demo.py`, and
+`demo.ipynb` all run under. `notebook` lives on the root [`pyproject.toml`](pyproject.toml)
+rather than `sdk/`'s own, since it's local demo tooling a downstream `pip install peyk` consumer
+of the package on its own has no use for. Drop `--extra notebook` if you only need `demo.py`/the
+test suite, not the notebook.
+
+Activate it with `.venv\Scripts\Activate.ps1` (Windows) or `source .venv/bin/activate`
+(Linux/macOS), or just invoke `.venv/Scripts/python.exe` / `.venv/bin/python` directly without
+activating.
+
+### Try it
+
+[`demo.py`](demo.py) (and its notebook twin, [`demo.ipynb`](demo.ipynb), for stepping through each
+stage interactively) is a runnable end-to-end example: configures a pipeline matching
+`example.yaml`'s own model defaults, starts and waits on whichever vLLM sidecars that config
+actually needs, then runs the main container over `hotstorage/input` → `hotstorage/output`.
+
+```
+.venv/Scripts/python.exe demo.py --help     # Windows
+.venv/bin/python demo.py --help             # Linux/macOS
+jupyter notebook demo.ipynb                 # notebook version, either platform
+```
+
+Pass `--build-image` the first time to build `peyk:dev` from `containers/peyk` before running.
+Bedrock/GCP credentials are picked up automatically from `containers/peyk/.env` /
+`containers/peyk/gcp-key.json` if present, same as `run_local.sh`.
+
+See [`sdk/README.md`](sdk/README.md) for the full Python API (`Peyk`, `PipelineConfig`,
+`SidecarManager`, `PeykRunner`) and how to run the SDK's own test suite.
+
 ## License
 
 See [LICENSE](LICENSE).
