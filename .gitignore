@@ -228,3 +228,5 @@ containers/peyk-vlm/gcp-key.json
 # Local/EC2 hot-storage dir for peyk-orchestrator's job input/output/intermediate artifacts
 # (see containers/peyk-orchestrator/run_local.sh) — ephemeral by design, never committed.
 /hotstorage
+/z_surya_exploration
+gcp-key.json
