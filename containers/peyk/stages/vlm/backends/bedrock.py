@@ -26,6 +26,7 @@ class BedrockVLMBackend(VLMBackend):
 
     def load(self) -> None:
         import boto3
+        from botocore.config import Config
 
         # No explicit credential handling here — boto3/botocore resolves auth automatically,
         # and bedrock-runtime supports two schemes (confirmed via its service model:
@@ -36,7 +37,18 @@ class BedrockVLMBackend(VLMBackend):
         # credential chain (~/.aws profile, IAM role, etc.) if that env var isn't set. Verified
         # working with just `--env-file <file containing AWS_BEARER_TOKEN_BEDROCK=...>` and no
         # ~/.aws mount at all — see implementation_plan.md Task 1.6 and this container's README.
-        self._client = boto3.client("bedrock-runtime", region_name=self.region)
+        #
+        # Explicit Config, not botocore's own unconfigured defaults: a `role="table"` call
+        # (reproduce a whole table as HTML, prompts.py) is a genuinely long single generation —
+        # botocore's default read_timeout (60s) is tuned for typical API calls, not this, and
+        # was observed timing out mid-generation on a real table crop (implementation_plan.md's
+        # run log). retries=max_attempts=1 (i.e. no botocore-level retry) is deliberate too: this
+        # backend's caller (run.py's predict_with_retry) already retries with its own backoff/
+        # jitter policy — leaving botocore's own retry active as well would silently stack a
+        # second, invisible retry loop underneath it, making the actual worst-case latency for
+        # one image impossible to reason about from run.py's log output alone.
+        config = Config(connect_timeout=10, read_timeout=300, retries={"max_attempts": 1})
+        self._client = boto3.client("bedrock-runtime", region_name=self.region, config=config)
 
     def predict(self, image_path: Path, role: str) -> VLMResult:
         if self._client is None:
