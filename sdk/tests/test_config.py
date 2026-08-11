@@ -1,6 +1,6 @@
 import pytest
 
-from peyk import ConfigValidationError, PipelineConfig, StageConfig
+from peyk import ConfigValidationError, KNOWN_VLM_MODELS, PipelineConfig, StageConfig
 
 
 def _base_config(**overrides) -> PipelineConfig:
@@ -132,3 +132,28 @@ def test_sidecar_requirements_only_lists_what_is_used():
 
     neither = _base_config(tsr=StageConfig(model="tableformer"), ocr=StageConfig(model="tesseract"))
     assert neither.sidecar_requirements() == set()
+
+
+def test_sidecar_requirements_includes_surya_layout():
+    # layout is a valid, independent surya use (LAYOUT_MODELS includes it, and
+    # pipeline.py's run_layout() dispatches to the surya sidecar for it) — regression test for
+    # a real bug where sidecar_requirements() checked tsr/ocr/cell_ocr/fullpage but never
+    # layout, so a layout-only surya config passed validate() but never started its sidecar.
+    layout_only = _base_config(
+        layout=StageConfig(model="surya"),
+        tsr=StageConfig(model="tableformer"),
+        ocr=StageConfig(model="tesseract"),
+    )
+    assert layout_only.sidecar_requirements() == {"surya"}
+
+
+def test_known_vlm_models_matches_container_registry():
+    # Regression test for a real, already-manifesting drift: KNOWN_VLM_MODELS was missing
+    # several models containers/peyk/stages/vlm/backends/registry.py's MODEL_REGISTRY actually
+    # defines (claude-sonnet-4, claude-sonnet-5, claude-opus-4-7/4-8, claude-fable-5,
+    # nova-2-lite) — validate() rejected them even though the container would have accepted
+    # them. This only checks a representative sample (importing registry.py itself needs the
+    # container's own runtime deps, unavailable here) so a future registry addition doesn't
+    # silently reintroduce the same gap unnoticed for these specific keys.
+    for model in ("claude-sonnet-4", "claude-sonnet-5", "claude-opus-4-7", "claude-opus-4-8", "claude-fable-5", "nova-2-lite"):
+        assert model in KNOWN_VLM_MODELS, f"{model!r} missing from KNOWN_VLM_MODELS"

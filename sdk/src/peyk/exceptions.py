@@ -12,3 +12,8 @@ class SidecarNotReadyError(PeykError):
 
 class MissingCredentialsError(PeykError):
     """A selected backend needs a credential (Bedrock token, GCP key) that wasn't provided."""
+
+
+class NotConfiguredError(PeykError):
+    """A Peyk method that needs configure() to have run first (ensure_sidecars(), run()) was
+    called before it did."""

@@ -25,7 +25,9 @@ SidecarName = Literal["surya", "paddleocr"]
 
 PEYK_NETWORK = "peyk-net"
 
-_GPU_DEVICE_REQUEST = DeviceRequest(count=-1, capabilities=[["gpu"]])
+# Shared with runner.py (imported from here, not redefined) — every container this package
+# starts needs the same "--gpus all"-equivalent device request.
+GPU_DEVICE_REQUEST = DeviceRequest(count=-1, capabilities=[["gpu"]])
 
 
 def ensure_network(client: "docker.DockerClient", network: str) -> None:
@@ -157,7 +159,7 @@ class SidecarManager:
             network=self.network,
             environment=spec.environment,
             volumes=spec.volumes,
-            device_requests=[_GPU_DEVICE_REQUEST],
+            device_requests=[GPU_DEVICE_REQUEST],
             detach=True,
             **spec.extra_kwargs,
         )

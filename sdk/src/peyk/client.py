@@ -12,6 +12,7 @@ import docker
 
 from .config import PipelineConfig
 from .credentials import Credentials
+from .exceptions import NotConfiguredError
 from .runner import PeykRunner, RunResult
 from .sidecars import PEYK_NETWORK, SidecarManager
 
@@ -61,7 +62,7 @@ class Peyk:
         configure(). sidecar_overrides is forwarded to SidecarManager.start (surya tuning knobs
         only)."""
         if self._config is None:
-            raise RuntimeError("call configure() before ensure_sidecars()")
+            raise NotConfiguredError("call configure() before ensure_sidecars()")
         needed = self._config.sidecar_requirements()
         for name in needed:
             overrides = sidecar_overrides if name == "surya" else {}
@@ -83,7 +84,7 @@ class Peyk:
         on_log: Callable[[str], None] | None = None,
     ) -> RunResult:
         if self._config_path is None:
-            raise RuntimeError("call configure() before run()")
+            raise NotConfiguredError("call configure() before run()")
         return self.runner.run(
             config_path=self._config_path,
             input_dir=input_dir,

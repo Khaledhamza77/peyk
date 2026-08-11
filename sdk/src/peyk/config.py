@@ -24,16 +24,19 @@ LAYOUT_MODELS = frozenset({"pp-doclayout-v2", "doclayout-yolo", "heron", "surya"
 TSR_MODELS = frozenset({"tatr", "rapidtable", "pp-structure-general", "pp-structure-wiring", "tableformer", "surya"})
 OCR_MODELS = frozenset({"paddleocr-vl", "paddleocr", "easyocr", "rapidocr", "tesseract", "surya"})
 
-# Transcribed from example.yaml's own "peyk-vlm supported models" comment block.
+# Transcribed from containers/peyk/stages/vlm/backends/registry.py's MODEL_REGISTRY keys
+# directly (not example.yaml's own "peyk-vlm supported models" comment block, which is itself a
+# second, independently-drifting copy of the same data) — still a static snapshot, still able to
+# drift, per this module's own docstring.
 KNOWN_VLM_MODELS = frozenset({
-    # Tier 1
-    "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-opus-4-5", "claude-opus-4-6",
+    "claude-haiku", "claude-sonnet-4", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-5",
+    "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-fable-5",
+    "nova-lite", "nova-pro", "nova-2-lite",
+    "pixtral-large",
+    "kimi-k2-5",
     "gemini-2-5-flash", "gemini-2-5-flash-lite", "gemini-2-5-pro",
     "gemini-3-flash", "gemini-3-1-flash-lite", "gemini-3-1-pro", "gemini-3-5-flash",
-    # Tier 2
-    "kimi-k2-5", "claude-haiku",
-    # Tier 3
-    "deepseek-ocr", "nova-lite", "nova-pro", "pixtral-large",
+    "deepseek-ocr",
 })
 
 DEFAULT_VLLM_SERVER_URL = "http://peyk-vllm-paddleocr:8118/v1"
@@ -200,7 +203,12 @@ class PipelineConfig:
         """Which of {"surya", "paddleocr"} sidecars this config actually needs, based on every
         stage's resolved backend — used to avoid starting a sidecar nothing in the config will
         ever call."""
-        backends = {self.tsr.model, self.ocr.model}
+        # layout.model included too: "surya" is a valid, independent layout choice (LAYOUT_MODELS
+        # includes it, and pipeline.py's run_layout() dispatches to the surya sidecar for it) —
+        # missing this meant a layout-only surya config passed validate() but never got its
+        # sidecar started, so run_layout() would hit a connection refused against a sidecar that
+        # was never running.
+        backends = {self.layout.model, self.tsr.model, self.ocr.model}
         if self.cell_ocr is not None:
             backends.add(self.cell_ocr.model)
         if self.fullpage is not None:

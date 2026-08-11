@@ -712,7 +712,7 @@ def dispatch_documents(docs: list[Path], layout_results: dict[str, dict], config
     # cost. Override configured: cells get their own dir/batch/dispatch, so an isolated cell
     # crop never reaches whatever (possibly VLM-style) model config.ocr uses — see
     # implementation_plan.md Task 1.5. A configured cell_ocr that resolves to the exact same
-    # StageConfig as ocr (dataclass equality on image/backend/lang/server_url) is treated the
+    # StageConfig as ocr (dataclass equality on backend/lang/server_url) is treated the
     # same as no override: under DooD this redundant split cost nothing extra (both dispatches
     # were already-isolated containers paying model-load cost regardless), but in-process it
     # would load the same local model (e.g. easyocr/paddleocr/tableformer-class weights) twice

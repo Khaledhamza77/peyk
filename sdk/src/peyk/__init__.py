@@ -1,7 +1,7 @@
 from .client import Peyk
 from .config import KNOWN_VLM_MODELS, PipelineConfig, SmartSplitConfig, StageConfig
 from .credentials import Credentials
-from .exceptions import ConfigValidationError, MissingCredentialsError, PeykError, SidecarNotReadyError
+from .exceptions import ConfigValidationError, MissingCredentialsError, NotConfiguredError, PeykError, SidecarNotReadyError
 from .runner import PeykRunner, RunResult
 from .sidecars import SidecarManager
 
@@ -19,4 +19,5 @@ __all__ = [
     "ConfigValidationError",
     "SidecarNotReadyError",
     "MissingCredentialsError",
+    "NotConfiguredError",
 ]

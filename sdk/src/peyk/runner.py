@@ -10,17 +10,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import docker
-from docker.types import DeviceRequest
 
 from .credentials import Credentials
-from .sidecars import PEYK_NETWORK, ensure_network
+from .sidecars import GPU_DEVICE_REQUEST, PEYK_NETWORK, ensure_network
 
 CONTAINER_NAME = "peyk-run"
 WORKDIR_VOLUME = "peyk-hotstorage-workdir"
 PADDLEX_CACHE_VOLUME = "peyk-paddlex-cache"
 CONFIG_CONTAINER_DIR = "/app/stages/orchestrator/config"
-
-_GPU_DEVICE_REQUEST = DeviceRequest(count=-1, capabilities=[["gpu"]])
 
 
 @dataclass
@@ -104,7 +101,7 @@ class PeykRunner:
             network=self.network,
             environment=credentials.env_vars(),
             volumes=volumes,
-            device_requests=[_GPU_DEVICE_REQUEST],
+            device_requests=[GPU_DEVICE_REQUEST],
             detach=True,
         )
         try:

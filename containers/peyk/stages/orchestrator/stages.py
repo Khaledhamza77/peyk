@@ -2,10 +2,11 @@
 docstring for the full mechanism). Before docs-personal/new_containerization_strategy.md's step
 5, this shelled out to `docker run` against a sibling container over docker-outside-of-docker;
 now peyk-orchestrator lives in the same merged image as every stage it dispatches, so a "stage
-run" is just a plain in-process function call. A stubbed stage (`stub: true` in config, e.g. a
-stage a given run doesn't need) returns a placeholder fragment instead, so the dispatch/assembly
-path can be exercised end to end without every stage necessarily running. Flip `stub: false` and
-set `image`/`backend` in the config once a stage is ready."""
+run" is just a plain in-process function call. stub_fragment() (below) is not config-driven —
+there's no `stub:` YAML key (config.py: "there's no 'stub' concept anymore"; StageConfig has no
+`stub`/`image` field) — it's a missing-result fallback pipeline.py falls back to per-region when
+a dispatch produced no usable output for that region (e.g. a failed OCR/vlm call), so assembly
+can still produce a complete document instead of erroring out over one bad region."""
 import argparse
 import shutil
 import sys
