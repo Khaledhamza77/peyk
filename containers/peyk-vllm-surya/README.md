@@ -1,10 +1,11 @@
 # peyk-vllm-surya
 
-Persistent vLLM server for `datalab-to/surya-ocr-2`. `peyk-surya` (the layout/TSR/OCR client
-container, Task 1.8) is an HTTP client against this; it does not run inside
-`peyk-orchestrator`'s normal per-stage `docker run --rm` lifecycle (see `stages.py`), same
-reasoning as `peyk-vllm-paddleocr` — model load / CUDA graph capture is slow enough that
-paying it once and staying warm beats paying it on every stage invocation.
+Persistent vLLM server for `datalab-to/surya-ocr-2`. The `surya` stage (layout/TSR/OCR client,
+Task 1.8 — lives in `containers/peyk/stages/surya/`, part of the merged `peyk` image since
+docs-personal/new_containerization_strategy.md) is an HTTP client against this; it stays a
+separate, persistent container rather than being folded into `peyk` too, same reasoning as
+`peyk-vllm-paddleocr` — model load / CUDA graph capture is slow enough that paying it once and
+staying warm beats paying it on every stage invocation.
 
 ## Before relying on this
 
@@ -14,7 +15,7 @@ it as `Qwen3_5ForConditionalGeneration`, a natively-supported architecture
 (`trust_remote_code=False`, no patched vLLM build needed, unlike `peyk-vllm-paddleocr`), and
 `curl :8119/v1/models` returns the model correctly with the config below. What's still
 unconfirmed is the shape of its layout/recognition/table-rec API responses — see
-`containers/peyk-surya/backends/client.py`'s module docstring.
+`containers/peyk/stages/surya/backends/client.py`'s module docstring.
 
 ## Smoke test
 
@@ -75,7 +76,7 @@ with a budget of 6144 tokens` once capped, vs. no such bound before). That reser
 was closing symptoms of this one uncapped reservation, not the reservation itself. `--max-num-seqs`
 is kept at `8` rather than the library's own GPU-scaled default of `32` — that scaling assumes a
 `VLLM_GPU_TYPE="4090"` 24GB baseline, and this is a 12GB card, so `8` is set directly instead
-(also matching `peyk-surya`'s own client-side concurrency default — see that container's
+(also matching the `surya` stage's own client-side concurrency default — see that stage's
 `run.py`).
 
 **Coexistence with `peyk-vllm-paddleocr`**: the old "will NOT coexist, needs near-exclusive GPU
@@ -94,7 +95,7 @@ docker kill peyk-vllm-paddleocr   # only if coexistence somehow regresses again
 
 `Application startup complete.`, `curl :8119/v1/models` responds correctly, `~79s` cold start,
 `8.2 GiB` KV cache, `35.57x` max concurrency at the full `18,000`-token budget. Unlike the old
-config, concurrent client dispatch is now genuinely worthwhile — `peyk-surya/run.py`'s
+config, concurrent client dispatch is now genuinely worthwhile — the `surya` stage's `run.py`
 `ThreadPoolExecutor` + `tqdm` pattern (originally `--stage ocr` only) has since been extended to
 `--stage layout`/`tsr`/`table-full` and `--mode fullpage` too, all defaulting to concurrency `8`
 to match `--max-num-seqs` above.

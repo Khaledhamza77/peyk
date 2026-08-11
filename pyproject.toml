@@ -1,0 +1,25 @@
+# Repo-level uv workspace root — not a package of its own (`tool.uv.package = false`), just
+# the shared environment for the peyk SDK (sdk/, the one real workspace member), its tests, and
+# the local-only demo/dev tooling (demo.py, demo.ipynb) that a downstream `pip install peyk`
+# consumer has no use for — kept out of sdk/pyproject.toml's own extras for that reason.
+# `uv sync` here creates .venv and installs sdk/ into it editable, plus its own `dev` extra
+# (pytest, for testing the package itself); `uv sync --extra notebook` additionally pulls in
+# jupyter/ipykernel to run demo.ipynb.
+[project]
+name = "peyk-workspace"
+version = "0.1.0"
+description = "Workspace root for the peyk SDK, demos, and dev tooling."
+requires-python = ">=3.10"
+dependencies = ["peyk[dev]"]
+
+[project.optional-dependencies]
+notebook = ["jupyter>=1", "ipykernel>=6"]
+
+[tool.uv.sources]
+peyk = { workspace = true }
+
+[tool.uv.workspace]
+members = ["sdk"]
+
+[tool.uv]
+package = false

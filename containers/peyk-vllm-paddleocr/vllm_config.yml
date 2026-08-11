@@ -1,7 +1,7 @@
 # Passed to `paddleocr genai_server --backend_config` (see start.sh). Keys map onto vLLM's
-# own AsyncEngineArgs — this server shares a 12GB card with peyk-layout/peyk-simple-ocr's
-# per-stage `docker run --gpus all` calls, and vLLM's default gpu_memory_utilization (0.9)
-# would starve them.
+# own AsyncEngineArgs — this server shares a 12GB card with peyk's own `--gpus all` run
+# (layout/tsr/classical-ocr stages), and vLLM's default gpu_memory_utilization (0.9)
+# would starve it.
 #
 # 0.35 was tried first and failed outright: PaddleX's own defaults for this model request
 # max_model_len=16384 and max_num_batched_tokens=131072, and vLLM's torch.compile/CUDA-graph
