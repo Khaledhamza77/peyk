@@ -37,6 +37,10 @@ def parse_args() -> argparse.Namespace:
         "--persist-artifacts", action="store_true",
         help="also copy this run's crops/per-region model output into peyk.artifacts (see the job history section below)",
     )
+    parser.add_argument(
+        "--no-stream-logs", action="store_true",
+        help="block silently and print the full log only at the end, instead of streaming it live (the default)",
+    )
     return parser.parse_args()
 
 
@@ -82,9 +86,14 @@ def main() -> int:
         print(f"Sidecars ready: {needed or '(none needed for this config)'}")
 
     print(f"Running peyk:dev over {args.input} -> {args.output} ...")
-    result = peyk.run(input_dir=args.input, output_dir=args.output, persist_artifacts=args.persist_artifacts)
+    stream_logs = not args.no_stream_logs
+    result = peyk.run(
+        input_dir=args.input, output_dir=args.output,
+        persist_artifacts=args.persist_artifacts, stream_logs=stream_logs,
+    )
 
-    print(result.logs)
+    if not stream_logs:
+        print(result.logs)  # already printed live above if stream_logs was on — no need to repeat it
     print(f"Exit code: {result.exit_code}")
     print(f"Output written to: {result.output_dir}")
 
