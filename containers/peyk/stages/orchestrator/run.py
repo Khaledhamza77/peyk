@@ -13,8 +13,10 @@ import argparse
 import json
 import shutil
 import sys
+import uuid
 from pathlib import Path
 
+import events
 from config import load_config
 from pipeline import _validate_vlm_credentials, dispatch_documents, render_pdf_pages, run_layout
 from stages import run_docker_stage
@@ -56,6 +58,7 @@ def _run_fullpage(config, args: argparse.Namespace) -> int:
             input_dir=args.input,
             output_dir=surya_out,
             extra_args=["--stage", "surya", "--mode", "fullpage"],
+            stage_label="fullpage",
         )
         for md_path in surya_out.glob("*.md"):
             (args.output / md_path.name).write_text(md_path.read_text(encoding="utf-8"), encoding="utf-8")
@@ -87,6 +90,7 @@ def _run_fullpage(config, args: argparse.Namespace) -> int:
         input_dir=fullpage_in,
         output_dir=fullpage_out,
         extra_args=["--stage", "vlm", "--role", "fullpage"],
+        stage_label="fullpage",
     )
     page_results: dict[str, dict[int, str]] = {}
     for json_path in fullpage_out.glob("*.json"):
@@ -107,7 +111,12 @@ def main() -> int:
     parser.add_argument("--input", required=True, type=Path, help="Directory of input PDFs.")
     parser.add_argument("--output", required=True, type=Path, help="Directory to write assembled markdown, one file per document.")
     parser.add_argument("--workdir", type=Path, default=DEFAULT_WORKDIR, help=f"Directory for intermediate crops/renders (default: {DEFAULT_WORKDIR}, bind-mount this to a host directory).")
+    parser.add_argument("--job-id", default=None, help="Job identifier stamped onto every traceability event this run emits (default: a fresh UUID) — see events.py and sdk/src/peyk/history.py.")
     args = parser.parse_args()
+
+    job_id = args.job_id or uuid.uuid4().hex
+    events.set_job_id(job_id)
+    print(f"[peyk-orchestrator] job_id={job_id}", file=sys.stderr)
 
     if not args.input.is_dir():
         parser.error(f"--input {args.input} is not a directory")
@@ -116,6 +125,17 @@ def main() -> int:
 
     config = load_config(args.config)
 
+    events.emit("pipeline", "job_start", input_dir=str(args.input), output_dir=str(args.output))
+    try:
+        exit_code = _run(config, args)
+    except Exception as exc:
+        events.emit("pipeline", "job_end", exit_code=1, message=str(exc))
+        raise
+    events.emit("pipeline", "job_end", exit_code=exit_code)
+    return exit_code
+
+
+def _run(config, args: argparse.Namespace) -> int:
     if config.fullpage is not None:
         return _run_fullpage(config, args)
 

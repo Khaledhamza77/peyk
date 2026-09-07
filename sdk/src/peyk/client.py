@@ -13,6 +13,7 @@ import docker
 from .config import PipelineConfig
 from .credentials import Credentials
 from .exceptions import NotConfiguredError
+from .history import ArtifactStore, DEFAULT_ARTIFACTS_ROOT, DEFAULT_DB_PATH, JobStore
 from .runner import PeykRunner, RunResult
 from .sidecars import PEYK_NETWORK, SidecarManager
 
@@ -23,10 +24,17 @@ class Peyk:
         image: str = "peyk:dev",
         network: str = PEYK_NETWORK,
         docker_client: "docker.DockerClient | None" = None,
+        db_path: str | Path = DEFAULT_DB_PATH,
+        artifacts_root: str | Path = DEFAULT_ARTIFACTS_ROOT,
     ):
         self.client = docker_client or docker.from_env()
         self.sidecars = SidecarManager(self.client, network=network)
-        self.runner = PeykRunner(self.client, image=image, network=network)
+        # jobs/artifacts are handles onto the same JobStore/ArtifactStore instances the runner
+        # writes through, exposed here for querying/cleanup — see peyk.jobs.list_jobs()/
+        # get_events(), peyk.artifacts.cleanup() below. Not new state of their own.
+        self.jobs = JobStore(db_path)
+        self.artifacts = ArtifactStore(artifacts_root)
+        self.runner = PeykRunner(self.client, image=image, network=network, job_store=self.jobs, artifact_store=self.artifacts)
         self.credentials = Credentials()
         self._config: PipelineConfig | None = None
         self._config_path: Path | None = None
@@ -82,7 +90,13 @@ class Peyk:
         extra_args: list[str] | None = None,
         stream_logs: bool = False,
         on_log: Callable[[str], None] | None = None,
+        persist_artifacts: bool = False,
     ) -> RunResult:
+        """RunResult.job_id identifies this run in self.jobs (list_jobs()/get_job()/get_events())
+        regardless of persist_artifacts. persist_artifacts=True additionally copies every
+        dispatched stage's crops/model output into self.artifacts, stage-partitioned by job —
+        see PeykRunner.run()'s own docstring. Clean those up later with
+        self.artifacts.cleanup(job_id=..., stage=...)."""
         if self._config_path is None:
             raise NotConfiguredError("call configure() before run()")
         return self.runner.run(
@@ -93,6 +107,7 @@ class Peyk:
             extra_args=extra_args,
             stream_logs=stream_logs,
             on_log=on_log,
+            persist_artifacts=persist_artifacts,
         )
 
     def mirror_workdir_to_host(self, dest: str | Path) -> None:

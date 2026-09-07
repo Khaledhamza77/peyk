@@ -12,6 +12,7 @@ from pathlib import Path
 import pypdfium2 as pdfium
 from PIL import Image
 
+import events
 from config import PipelineConfig, StageConfig, full_table_backend, is_vlm_model, vlm_provider
 from stages import run_docker_stage, stub_fragment
 
@@ -163,6 +164,7 @@ def run_layout(config: PipelineConfig, input_dir: Path, workdir: Path) -> dict[s
         input_dir=input_dir,
         output_dir=out_dir,
         extra_args=extra_args,
+        stage_label="layout",
     )
     return {p.stem: json.loads(p.read_text()) for p in out_dir.glob("*.json")}
 
@@ -212,19 +214,22 @@ def _validate_vlm_credentials(backend: str) -> None:
     provider = vlm_provider(backend)
     if provider == "bedrock":
         if not os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
+            message = f"model {backend!r} is a Bedrock model but AWS_BEARER_TOKEN_BEDROCK isn't set"
+            events.emit("vlm", "error", model=backend, message=message)
             raise ValueError(
-                f"model {backend!r} is a Bedrock model but AWS_BEARER_TOKEN_BEDROCK isn't "
-                "set — see containers/peyk/README.md (generate a Bedrock API key) and "
+                f"{message} — see containers/peyk/README.md (generate a Bedrock API key) and "
                 "run_local.sh (which passes it via --env-file)."
             )
     elif provider in ("vertex-gemini", "vertex-maas"):
         if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+            message = f"model {backend!r} is a Vertex model but GOOGLE_APPLICATION_CREDENTIALS isn't set"
+            events.emit("vlm", "error", model=backend, message=message)
             raise ValueError(
-                f"model {backend!r} is a Vertex model but GOOGLE_APPLICATION_CREDENTIALS isn't "
-                "set — see containers/peyk/README.md (create a service-account key) and "
+                f"{message} — see containers/peyk/README.md (create a service-account key) and "
                 "run_local.sh (which mounts gcp-key.json and sets this)."
             )
     else:
+        events.emit("vlm", "error", model=backend, message=f"unknown vlm provider {provider!r}")
         raise ValueError(f"Unknown vlm provider {provider!r} for model {backend!r}")
 
 
@@ -348,6 +353,7 @@ def dispatch_tsr_batch(tsr_batch: list[tuple[str, str, Path]], config: PipelineC
         input_dir=tsr_in,
         output_dir=tsr_out,
         extra_args=extra_args,
+        stage_label="tsr",
     )
     return tsr_out
 
@@ -406,6 +412,7 @@ def dispatch_table_full_batch(
         input_dir=table_full_in,
         output_dir=table_full_out,
         extra_args=extra_args,
+        stage_label="table_full",
     )
     results: dict[str, dict[str, str]] = {}
     for json_path in table_full_out.glob("*.json"):
@@ -567,6 +574,7 @@ def dispatch_ocr_batch(
         input_dir=ocr_in,
         output_dir=ocr_out,
         extra_args=ocr_extra_args,
+        stage_label="cell_ocr" if out_dir_name == "cell_ocr_out" else "ocr",
     )
     results: dict[str, dict[str, str]] = {}
     for json_path in ocr_out.glob("*.json"):
@@ -590,6 +598,7 @@ def dispatch_figures_batch(figures_batch: list[tuple[str, str]], config: Pipelin
         input_dir=figures_in,
         output_dir=figures_out,
         extra_args=["--stage", "vlm", "--role", "figure"],
+        stage_label="figures",
     )
     results: dict[str, dict[str, str]] = {}
     for json_path in figures_out.glob("*.json"):
@@ -622,6 +631,7 @@ def dispatch_dcr(doc_path: Path, dcr_targets: list[dict], config: PipelineConfig
         # dcr's image is now peyk:dev (the merged worker), which multiplexes more than one
         # role behind the same entrypoint — see run_layout's comment for the same reasoning.
         extra_args=["--stage", "dcr"],
+        stage_label="dcr",
     )
     return {p.stem: json.loads(p.read_text())["text"] for p in dcr_out.glob("*.json")}
 
@@ -642,6 +652,7 @@ def assemble_document(
     setting (no per-region language detection exists)."""
     from markdownify import markdownify
 
+    doc_stem = doc_state["doc_stem"]
     fragments = []
     for idx, region in enumerate(doc_state["regions"]):
         label = region["label"]
@@ -649,10 +660,16 @@ def assemble_document(
             region_id = f"r{idx}"
             if region["_born_digital"]:
                 text = dcr_results.get(region_id)
-                fragments.append(normalize_digits(text, lang) if text is not None else stub_fragment("peyk-dcr", "text"))
+                fragments.append(
+                    normalize_digits(text, lang) if text is not None
+                    else stub_fragment("peyk-dcr", "text", doc_stem=doc_stem, region_id=region_id)
+                )
             else:
                 text = ocr_results.get(region_id)
-                fragments.append(normalize_digits(text, lang) if text is not None else stub_fragment("peyk-ocr", "text"))
+                fragments.append(
+                    normalize_digits(text, lang) if text is not None
+                    else stub_fragment("peyk-ocr", "text", doc_stem=doc_stem, region_id=region_id)
+                )
         elif label == "table":
             region_id = f"r{idx}"
             full_html = table_full_results.get(region_id)
@@ -665,11 +682,14 @@ def assemble_document(
                 # already normalizes each cell's text; this full-table HTML path bypassed that
                 # entirely until now, letting Eastern Arabic-Indic/ASCII digits mix within the
                 # same number (found via real output review during Task 1.7's peyk-vlm wiring).
-                fragments.append(normalize_digits(markdownify(full_html), lang) if full_html else stub_fragment("peyk-tsr", "table"))
+                fragments.append(
+                    normalize_digits(markdownify(full_html), lang) if full_html
+                    else stub_fragment("peyk-tsr", "table", doc_stem=doc_stem, region_id=region_id, event_stage="table_full")
+                )
                 continue
             structure = tsr_structures.get(idx)
             if structure is None:
-                fragments.append(stub_fragment("peyk-tsr", "table"))
+                fragments.append(stub_fragment("peyk-tsr", "table", doc_stem=doc_stem, region_id=region_id))
             else:
                 cell_texts = {
                     cell["cell_i"]: dcr_results.get(f"r{idx}_c{cell['cell_i']}") or ocr_results.get(f"r{idx}_c{cell['cell_i']}") or ""
@@ -679,7 +699,10 @@ def assemble_document(
         elif label == "figure":
             region_id = f"r{idx}"
             description = figures_results.get(region_id)
-            fragments.append(f"*{description}*" if description else stub_fragment("peyk-vlm", "figure"))
+            fragments.append(
+                f"*{description}*" if description
+                else stub_fragment("peyk-vlm", "figure", doc_stem=doc_stem, region_id=region_id, event_stage="figures")
+            )
         else:
             print(f"[peyk-orchestrator] unknown region label '{label}', skipping", file=sys.stderr)
 
