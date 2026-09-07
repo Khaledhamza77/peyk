@@ -4,7 +4,8 @@
 # consumer has no use for — kept out of sdk/pyproject.toml's own extras for that reason.
 # `uv sync` here creates .venv and installs sdk/ into it editable, plus its own `dev` extra
 # (pytest, for testing the package itself); `uv sync --extra notebook` additionally pulls in
-# jupyter/ipykernel to run demo.ipynb.
+# jupyter/ipykernel to run demo.ipynb, plus pandas (demo_logging_showcase.ipynb's job/event
+# table views only — not needed by demo.py/demo.ipynb themselves).
 [project]
 name = "peyk-workspace"
 version = "0.1.0"
@@ -13,7 +14,7 @@ requires-python = ">=3.10"
 dependencies = ["peyk[dev]"]
 
 [project.optional-dependencies]
-notebook = ["jupyter>=1", "ipykernel>=6"]
+notebook = ["jupyter>=1", "ipykernel>=6", "pandas>=2", "pillow>=10"]
 
 [tool.uv.sources]
 peyk = { workspace = true }

@@ -49,10 +49,47 @@ peyk.set_credentials(bedrock_bearer_token="...")  # only if a selected backend n
 peyk.ensure_sidecars(wait=True)  # starts + waits only the sidecars this config actually needs
 
 result = peyk.run(input_dir="./hotstorage/input", output_dir="./hotstorage/output")
-print(result.exit_code, result.logs)
+print(result.exit_code, result.logs, result.job_id)
 
 peyk.stop_sidecars()  # optional explicit teardown
 ```
+
+## Job history & artifacts
+
+Every `run()` call is recorded automatically in a local SQLite store (`peyk.jobs`, default
+`~/.peyk/peyk.db`) — a job row plus one event per pipeline-stage dispatch (start/end, duration,
+exit code, and any stub-fallback/credential errors), parsed out of the container's own log via
+the `@@PEYK-EVENT@@` lines `containers/peyk/stages/orchestrator/events.py` emits. This happens
+regardless of any other option below — it's cheap (text only) and always on.
+
+```python
+for job in peyk.jobs.list_jobs():
+    print(job.job_id, job.status, job.exit_code)
+
+for event in peyk.jobs.get_events(result.job_id):
+    print(event.stage, event.event, event.duration_s, event.artifact_path)
+```
+
+Pass `persist_artifacts=True` to `run()` to additionally copy each dispatched stage's own
+input/output directory (crops, per-region model JSON/HTML, viz PNGs) out of the shared
+`peyk-hotstorage-workdir` volume into a local, stage-partitioned tree (`peyk.artifacts`, default
+`~/.peyk/artifacts/<stage>/<job_id>/...`) — useful for tracing an actual model error back to the
+exact crop/output that produced it. Off by default: a single job's table-cell OCR crops alone can
+be hundreds of files.
+
+```python
+result = peyk.run(input_dir="...", output_dir="...", persist_artifacts=True)
+
+# Each dispatch_end event's artifact_path now points at the copied directory/directories:
+for event in peyk.jobs.get_events(result.job_id, stage="ocr"):
+    print(event.artifact_path)
+
+# Clean up later, independently of the DB history (which stays queryable either way):
+peyk.artifacts.cleanup(job_id=result.job_id)   # this job, every stage
+peyk.artifacts.cleanup(stage="ocr")            # every job's ocr artifacts
+```
+
+`Peyk(db_path=..., artifacts_root=...)` overrides both default locations.
 
 ## What's not covered yet
 
@@ -71,5 +108,7 @@ peyk.stop_sidecars()  # optional explicit teardown
 .venv/bin/python -m pytest sdk/tests/            # Linux/macOS
 ```
 
-Only `test_config.py` exists today — schema validation and YAML round-tripping, no Docker
-required.
+`test_config.py` (schema validation/YAML round-tripping) and `test_history.py` (JobStore/
+ArtifactStore — event parsing, job/event queries, artifact cleanup) — neither needs Docker.
+`sidecars.py`/`runner.py`/`client.py` still have no automated tests of their own, per the note
+above.
