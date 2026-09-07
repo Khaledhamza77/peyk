@@ -33,6 +33,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-sidecars", action="store_true", help="assume the vLLM sidecars are already running")
     parser.add_argument("--bedrock-token", default=None, help="overrides containers/peyk/.env's AWS_BEARER_TOKEN_BEDROCK")
     parser.add_argument("--gcp-key", default=None, type=Path, help="overrides containers/peyk/gcp-key.json")
+    parser.add_argument(
+        "--persist-artifacts", action="store_true",
+        help="also copy this run's crops/per-region model output into peyk.artifacts (see the job history section below)",
+    )
     return parser.parse_args()
 
 
@@ -78,11 +82,25 @@ def main() -> int:
         print(f"Sidecars ready: {needed or '(none needed for this config)'}")
 
     print(f"Running peyk:dev over {args.input} -> {args.output} ...")
-    result = peyk.run(input_dir=args.input, output_dir=args.output)
+    result = peyk.run(input_dir=args.input, output_dir=args.output, persist_artifacts=args.persist_artifacts)
 
     print(result.logs)
     print(f"Exit code: {result.exit_code}")
     print(f"Output written to: {result.output_dir}")
+
+    # Job history — recorded automatically by every run() call, regardless of --persist-artifacts.
+    # See docs-personal/central_logging_system.md and sdk/README.md's "Job history & artifacts".
+    print(f"\nJob {result.job_id} ({peyk.jobs.get_job(result.job_id).status}) — stage timeline:")
+    for event in peyk.jobs.get_events(result.job_id):
+        detail = f"{event.duration_s:.2f}s" if event.duration_s is not None else (event.message or "")
+        print(f"  [{event.stage or '?':>10}] {event.event or '?':<14} {detail}")
+        if event.artifact_path:
+            print(f"  {'':>10}   artifacts: {event.artifact_path}")
+
+    if args.persist_artifacts:
+        print(f"\nArtifacts persisted under {peyk.artifacts.root}/<stage>/{result.job_id}/ for each stage above.")
+        print(f"Clean them up later with e.g. peyk.artifacts.cleanup(job_id={result.job_id!r})")
+
     return result.exit_code
 
 

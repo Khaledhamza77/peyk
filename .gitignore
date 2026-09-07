@@ -224,6 +224,7 @@ containers/peyk-tsr/_test/
 kk_dockerfile/
 containers/peyk/gcp-key.json
 z_surya_exploration/
+central_document_ingestion_proposal.pptx
 
 # Local/EC2 hot-storage dir for peyk-orchestrator's job input/output/intermediate artifacts
 # (see containers/peyk-orchestrator/run_local.sh) — ephemeral by design, never committed.
