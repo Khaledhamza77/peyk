@@ -146,26 +146,18 @@ def snapshot_report(since_ts: float, job_store: JobStore | None = None) -> str:
 
     completed_cases = sorted(summary.keys())
     all_case_names = [c.name for n in cases_module.SWEEPS for c in cases_module.build([n])]
+    still_pending = [n for n in all_case_names if n not in completed_cases]
 
-    header = (
+    title = (
         f"# peyk benchmark -- PARTIAL SNAPSHOT (sweep still in progress)\n\n"
-        f"Captured {time.strftime('%Y-%m-%dT%H:%M:%S')}. {len(completed_cases)} of "
-        f"{len(all_case_names)} planned configurations have at least one completed measured run.\n\n"
-        "**No GPU/VRAM data in this snapshot** -- that is only ever computed by the live harness "
-        "process and was not persisted anywhere it can be recovered from independently. Re-run "
-        "`python -m benchmarks report` against the full result file once the sweep finishes for "
-        "complete numbers.\n\n"
+        f"Captured {time.strftime('%Y-%m-%dT%H:%M:%S')}.\n\n"
     )
     parts = [
-        header,
+        title,
+        report_module.partial_snapshot_disclaimer(len(completed_cases), len(all_case_names), still_pending),
+        report_module.metric_glossary(),
         report_module.latency_table(summary),
         report_module.stage_breakdown_table(summary),
         report_module.failures_block(records),
     ]
-
-    still_pending = [n for n in all_case_names if n not in completed_cases]
-    if still_pending:
-        parts.append(
-            "## Not yet completed\n\n" + "\n".join(f"- {n}" for n in still_pending) + "\n"
-        )
     return "\n".join(p for p in parts if p)
