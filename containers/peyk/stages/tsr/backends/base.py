@@ -98,20 +98,31 @@ def col_boxes(structure: TableStructure, image_width: float, image_height: float
         boxes = cols[c]
         spans.append([min(b[0] for b in boxes), max(b[2] for b in boxes)])
 
-    # Extend each boundary to the midpoint with its neighbor, so adjacent columns always
-    # meet with no gap and no overlap — any content sitting between two detected column
-    # edges (which the raw per-column union above would otherwise miss) ends up on one side
-    # or the other instead of belonging to neither. First/last columns extend all the way to
-    # the crop edges, same reasoning row_boxes uses for the full row-band width.
+    # Derive one boundary per gap between adjacent columns, then rebuild every span from
+    # consecutive boundaries — rather than mutating each span's two edges in place. A midpoint
+    # boundary assumes column i's raw span sits left of column i+1's; a noisy/garbled structure
+    # prediction (observed in practice: TableFormer on a doclayout-yolo-framed table crop,
+    # fawry_sample.pdf's r13 region) can violate that badly enough that even a boundary clamped
+    # against its own immediate neighbor still ends up inverted once it collides with a raw edge
+    # two columns down the line — tried that first, and a 3-column adversarial case defeated it
+    # (col 1 got squeezed between an already-advanced left edge from col 0 and a raw right edge
+    # from col 2 that had regressed behind it). A running maximum over the whole boundary
+    # sequence closes that gap: since boundaries[i+1] can never be less than boundaries[i], the
+    # span (boundaries[i], boundaries[i+1]) can never invert, for any input, by construction —
+    # not by checking enough cases to convince ourselves the checks cover it.
+    #
+    # An already-well-ordered prediction is unaffected: the running max is then just the
+    # ordinary midpoint at every step, since each midpoint already exceeds the previous one.
+    boundaries = [0.0]
     for i in range(len(spans) - 1):
-        boundary = (spans[i][1] + spans[i + 1][0]) / 2
-        spans[i][1] = boundary
-        spans[i + 1][0] = boundary
-    if spans:
-        spans[0][0] = 0.0
-        spans[-1][1] = image_width
+        midpoint = (spans[i][1] + spans[i + 1][0]) / 2
+        boundaries.append(max(midpoint, boundaries[-1]))
+    boundaries.append(image_width)
 
-    return [ColBox(col=c, bbox=(x0, 0.0, x1, image_height)) for c, (x0, x1) in zip(indices, spans)]
+    return [
+        ColBox(col=c, bbox=(boundaries[i], 0.0, boundaries[i + 1], image_height))
+        for i, c in enumerate(indices)
+    ]
 
 
 def regularized_cells(structure: TableStructure, rows: list[RowBox], cols: list[ColBox]) -> list[dict]:

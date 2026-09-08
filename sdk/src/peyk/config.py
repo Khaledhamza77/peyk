@@ -117,6 +117,12 @@ class PipelineConfig:
     surya_smart_table_split: SmartSplitConfig = field(default_factory=SmartSplitConfig)
     born_digital_min_chars: int = 20
     force_scanned: bool = False
+    # True (default): the orchestrator's layout/tsr dispatches pass --visualize, writing a
+    # per-page/per-crop debug overlay PNG alongside every real output file — real, avoidable
+    # per-crop cost at batch scale. See containers/peyk/stages/orchestrator/config.py's own
+    # PipelineConfig.visualize for the full rationale; set False when nothing will ever look at
+    # the overlays (e.g. latency benchmarking).
+    visualize: bool = True
     fullpage: StageConfig | None = None
 
     def _cell_ocr_backend(self) -> str | None:
@@ -244,6 +250,8 @@ class PipelineConfig:
             raw["dcr"] = self.dcr.to_dict()
         if self.cell_ocr is not None:
             raw["cell_ocr"] = self.cell_ocr.to_dict()
+        if not self.visualize:
+            raw["visualize"] = False
         return raw
 
     def to_yaml(self) -> str:
@@ -267,6 +275,7 @@ class PipelineConfig:
             surya_smart_table_split=SmartSplitConfig.from_dict(raw.get("surya_smart_table_split", {})),
             born_digital_min_chars=raw.get("born_digital", {}).get("min_chars_per_page", 20),
             force_scanned=raw.get("born_digital", {}).get("force_scanned", False),
+            visualize=raw.get("visualize", True),
             fullpage=StageConfig.from_dict(fullpage_raw) if fullpage_raw else None,
         )
 
