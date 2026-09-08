@@ -69,6 +69,77 @@ def environment_block(env: dict) -> str:
     return "\n".join(lines)
 
 
+def metric_glossary() -> str:
+    """Plain-language definitions for every column this report prints, meant to stand alone in
+    front of someone who hasn't read benchmarks/README.md. Placed first, before any table, since
+    a table of unexplained numbers invites the reader to guess at what they mean rather than ask."""
+    return (
+        "## What these numbers mean\n\n"
+        "**\"Document batch\":** every timed run processes all sample PDFs in the input directory "
+        "together, in a single pipeline invocation -- not one document at a time. The pipeline is "
+        "built this way on purpose (layout/OCR/TSR/figures are each dispatched once per batch, not "
+        "once per document, so each stage's model-load cost is paid once rather than repeated per "
+        "document). This run's batch is the project's 5 sample PDFs, ~40 pages total, one of them "
+        "a 30-page document that dominates the total. A row's Median therefore describes "
+        "\"all 5 documents together,\" never \"one typical document\" -- dividing by page count "
+        "(the s/page column, where available) is what makes a single-document cost comparable.\n\n"
+        "- **Configuration** -- which pipeline setting was swept for that row (e.g. `ocr=tesseract` "
+        "means every other stage stayed fixed and only the OCR backend changed to Tesseract).\n"
+        "- **n** -- how many measured repeats that row's numbers are built from. A separate, "
+        "discarded warmup run happens first and is never counted here (it pays one-time costs -- "
+        "model loading, sidecar startup -- that are not part of steady-state latency).\n"
+        "- **Median (s)** -- the middle value of those n repeats' total wall-clock time for one "
+        "full pipeline run over the whole document batch (see above). Median, not mean/average, "
+        "on purpose: with only a handful of repeats a single slow outlier (a network hiccup on a "
+        "managed API call, for instance) would drag a mean far from what actually typically "
+        "happens.\n"
+        "- **Range (s)** -- the fastest and slowest of those repeats. A wide range is itself a "
+        "finding -- it means that configuration's cost is unpredictable, not just slow.\n"
+        "- **Text rec (s)** -- combined OCR + table-cell-OCR time. Reported together because the "
+        "pipeline sometimes merges those two into a single dispatch internally, so the OCR figure "
+        "alone would not mean the same thing in every row.\n"
+        "- **s/page** -- median time divided by pages processed, so a 2-page run and a 30-page run "
+        "can be compared on the same footing. `n/a` means the page count for that row was not "
+        "captured (true for every row in a partial/live snapshot -- see the disclaimer below).\n"
+        "- **VRAM delta (MiB)** -- extra GPU memory used, above whatever was already resident "
+        "before the run started. `unstable` means something else on the machine changed how much "
+        "memory it was holding between repeats, so no honest number could be computed -- not a "
+        "failed measurement, a withheld one. `n/a` means VRAM was not sampled at all for that row.\n"
+        "- **GPU util** -- average percent of the GPU actually busy during the run. Low util with "
+        "high latency usually means the bottleneck is a network call (a managed API) or CPU work, "
+        "not the GPU.\n"
+        "- **Per-stage breakdown** (Stage / Model / Median (s) / Share) -- the same total run time "
+        "split by pipeline stage (layout, ocr, tsr, figures, ...), so \"this configuration is "
+        "slower\" becomes \"...because its OCR stage is\". Share is that stage's percent of the "
+        "row's own total.\n\n"
+    )
+
+
+def partial_snapshot_disclaimer(completed: int, total: int, pending: list[str]) -> str:
+    """What has and has not actually run yet, stated plainly, first, before any number. A partial
+    result presented without this reads as a finished comparison -- the single most likely way
+    this snapshot gets misquoted in a meeting."""
+    lines = [
+        "## Disclaimer -- this sweep was not finished when this was captured",
+        "",
+        f"**{completed} of {total} planned configurations** have at least one completed measured "
+        "run below. The rest were still queued or in progress and are listed at the bottom under "
+        "\"Not yet completed\" -- their absence here means *not yet measured*, not *found to be "
+        "unnecessary* or *ruled out*.",
+        "",
+        "Additionally, because this is a snapshot of an in-progress run rather than a finished "
+        "one's own saved output, **GPU memory, GPU utilization, and per-page normalisation are not "
+        "available** for any row -- that data only ever lives in the process actually running the "
+        "sweep, and could not be recovered independently. Every number below is wall-clock latency "
+        "only.",
+        "",
+    ]
+    if pending:
+        lines.append(f"**Still pending ({len(pending)}):** " + ", ".join(pending))
+        lines.append("")
+    return "\n".join(lines)
+
+
 def latency_table(summary: dict[str, dict]) -> str:
     """One row per swept case. Median plus range, because with 3-5 repeats a mean is one outlier
     away from being wrong -- and for managed APIs, outliers are a real recurring behaviour
@@ -288,6 +359,7 @@ def render(results_path: str | Path, include_published: bool = True) -> str:
     parts = [
         "# peyk benchmark report",
         "",
+        metric_glossary(),
         environment_block(env),
         latency_table(summary),
         stage_breakdown_table(summary),
