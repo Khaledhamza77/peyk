@@ -116,6 +116,21 @@ class PipelineConfig:
     surya_smart_table_split: SmartSplitConfig = field(default_factory=SmartSplitConfig)
     born_digital_min_chars: int = 20
     force_scanned: bool = False
+    # True (default, matches every behavior before this field existed): layout/tsr dispatches
+    # pass --visualize, writing a per-page/per-crop debug overlay PNG alongside every real
+    # output file. Real, non-trivial cost at batch scale — an extra PIL decode+draw+encode per
+    # crop, on top of the actual model inference — paid on every single run whether or not
+    # anyone ever opens one of those PNGs. Set False to skip it entirely: useful for latency
+    # benchmarking (where the overlay is pure overhead never being looked at) and, as a side
+    # effect, for skipping the one thing overlay drawing actually validated by accident — a
+    # garbled structure prediction's col_boxes() output used to crash at draw time via PIL's own
+    # bounds check (ImageDraw.rectangle: "x1 must be greater than or equal to x0"), which is how
+    # that bug (stages/tsr/backends/base.py's col_boxes(), and its duplicate in
+    # stages/surya/backends/base.py) was originally found. Both are fixed at the source now —
+    # col_boxes() can no longer produce an inverted box, by construction — so turning
+    # visualization off does not trade correctness for speed here; it only removes debug output
+    # nothing downstream reads.
+    visualize: bool = True
     # None (default): the normal per-region layout->tsr->ocr->figures->assembly path. Set to
     # bypass all of that entirely and run one whole-page-at-a-time model over every page
     # instead — model "surya" renders PDFs itself (peyk-surya's own --mode fullpage); any
@@ -313,6 +328,7 @@ def load_config(path: Path) -> PipelineConfig:
             surya_smart_table_split=_smart_split_config(raw.get("surya_smart_table_split", {})),
             born_digital_min_chars=raw.get("born_digital", {}).get("min_chars_per_page", 20),
             force_scanned=raw.get("born_digital", {}).get("force_scanned", False),
+            visualize=raw.get("visualize", True),
             fullpage=fullpage,
         )
 
@@ -326,6 +342,7 @@ def load_config(path: Path) -> PipelineConfig:
         surya_smart_table_split=_smart_split_config(raw.get("surya_smart_table_split", {})),
         born_digital_min_chars=raw.get("born_digital", {}).get("min_chars_per_page", 20),
         force_scanned=raw.get("born_digital", {}).get("force_scanned", False),
+        visualize=raw.get("visualize", True),
         fullpage=None,
     )
     _validate_tsr_and_cell_ocr(config)

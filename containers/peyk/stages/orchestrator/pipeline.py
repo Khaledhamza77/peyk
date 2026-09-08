@@ -155,10 +155,11 @@ def run_layout(config: PipelineConfig, input_dir: Path, workdir: Path) -> dict[s
     # outer --stage picks it (--stage surya), and its own --role picks its layout role within
     # that (see containers/peyk/stages/surya/run.py) — a different shape from every other
     # layout backend, which is directly a top-level stage (--stage layout, no --role needed).
+    viz_flag = ["--visualize"] if config.visualize else []
     if config.layout.backend == "surya":
-        extra_args = ["--visualize", "--stage", "surya", "--role", "layout"]
+        extra_args = [*viz_flag, "--stage", "surya", "--role", "layout"]
     else:
-        extra_args = ["--visualize", "--stage", "layout"]
+        extra_args = [*viz_flag, "--stage", "layout"]
     run_docker_stage(
         model=config.layout.backend,
         input_dir=input_dir,
@@ -344,10 +345,11 @@ def dispatch_tsr_batch(tsr_batch: list[tuple[str, str, Path]], config: PipelineC
     tsr_out = workdir / "tsr_out"
     # Same surya-is-a-module-within-a-module shape as run_layout's comment above — outer
     # --stage surya + inner --role tsr for surya, plain --stage tsr for every classical backend.
+    viz_flag = ["--visualize"] if config.visualize else []
     if config.tsr.backend == "surya":
-        extra_args = ["--visualize", "--stage", "surya", "--role", "tsr"]
+        extra_args = [*viz_flag, "--stage", "surya", "--role", "tsr"]
     else:
-        extra_args = ["--visualize", "--stage", "tsr"]
+        extra_args = [*viz_flag, "--stage", "tsr"]
     run_docker_stage(
         model=config.tsr.backend,
         input_dir=tsr_in,
