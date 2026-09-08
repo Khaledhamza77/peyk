@@ -50,6 +50,10 @@ def _base() -> PipelineConfig:
     # It also matches the config this project actually runs (hotstorage/peyk-config/config.yaml
     # sets force_scanned: true), so the swept numbers describe the real deployment path.
     config.force_scanned = True
+    # No benchmark case, harness, or report reads a single _viz.png/_aug_viz.png -- so the real
+    # per-crop draw+encode cost of producing them is pure overhead here, paid on every run of
+    # every case for artifacts nobody looks at. Off across the whole sweep.
+    config.visualize = False
     return config
 
 

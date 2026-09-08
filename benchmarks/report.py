@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 
 from . import model_cards
-from .harness import RunRecord, StageTiming, aggregate
+from .harness import RunRecord, StageTiming, aggregate, failures
 from .workunits import WorkUnits
 
 
@@ -118,6 +118,25 @@ def latency_table(summary: dict[str, dict]) -> str:
         "other GPU applications and re-run rather than quoting a number from this column._\n"
     )
     return "## Latency and compute (measured)\n\n" + body + caveat
+
+
+def failures_block(records: list[RunRecord]) -> str:
+    """Configurations where every measured run failed. Without this, such a case simply has no
+    row anywhere in the report -- indistinguishable from a configuration nobody tried. A
+    configuration that reliably fails on this corpus is itself a real result."""
+    failed = failures(records)
+    if not failed:
+        return ""
+    sections = ["## Failed configurations", "", "Every measured run failed identically. Not a "
+                "gap in coverage -- these were attempted and did not produce usable output.", ""]
+    for case, info in sorted(failed.items()):
+        sections.append(f"### {case}\n")
+        sections.append(f"_{info['attempts']} attempt(s), all failed._\n")
+        for err in info["errors"]:
+            # Long tracebacks are fenced rather than inlined so they read as pre-formatted
+            # detail, not as prose the reader is expected to parse line by line.
+            sections.append(f"```\n{err}\n```\n")
+    return "\n".join(sections)
 
 
 def stage_breakdown_table(summary: dict[str, dict]) -> str:
@@ -272,6 +291,7 @@ def render(results_path: str | Path, include_published: bool = True) -> str:
         environment_block(env),
         latency_table(summary),
         stage_breakdown_table(summary),
+        failures_block(records),
     ]
     if include_published:
         parts += [

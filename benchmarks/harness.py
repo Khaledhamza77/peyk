@@ -226,8 +226,36 @@ class Harness:
         window: their load cost is a one-time deployment cost, not part of per-document latency.
         Their VRAM reservation is still captured -- as the sampler's baseline, since it is already
         resident by the time sampling begins.
-        """
+
+        `_active_sidecars` alone is not enough to decide this, though -- it is in-process state,
+        empty on every fresh Harness/CLI invocation regardless of what is actually running in
+        Docker. Without checking real state, a brand-new process whose first case needs Surya
+        would call sidecars.start('surya') unconditionally on a sidecar a previous run (or a
+        person, by hand) already brought up and warmed -- discarding it and repaying the full
+        cold start for nothing.
+
+        Checked via the container's own running status, not sidecars.is_ready() (an HTTP GET
+        against localhost:<port>). Confirmed in practice: a paddleocr-vl sidecar started by hand
+        via containers/peyk-vllm-paddleocr/start.sh (rather than through this SDK) publishes no
+        host port at all -- SidecarManager's own docstring notes this is deliberate upstream
+        behavior it deviates from, precisely so its *own*-started sidecars can be host-polled.
+        is_ready() correctly reports False for a start.sh-launched container, since it genuinely
+        is not reachable from the host that way -- but it does not need to be: the pipeline
+        reaches it container-to-container over peyk-net by container name, never via the host
+        port. Trusting is_ready() here would have force-removed (SidecarManager.start()'s first
+        step) and replaced a perfectly good, already-warm sidecar the user had started themselves,
+        for a check that was never actually testing the thing that matters."""
         needed = self.peyk._config.sidecar_requirements() if self.peyk._config else set()
+        for name in needed - self._active_sidecars:
+            try:
+                container = self.peyk.client.containers.get(self.peyk.sidecars._spec(name).container_name)
+                already_running = container.status == "running"
+            except Exception:
+                already_running = False
+            if already_running:
+                print(f"[bench]   sidecar {name} already up, reusing", flush=True)
+                self._active_sidecars.add(name)
+
         missing = needed - self._active_sidecars
         for name in missing:
             print(f"[bench]   starting sidecar {name} (cold start, not measured)", flush=True)
@@ -255,6 +283,16 @@ class Harness:
                 try:
                     result = self.peyk.run(input_dir=self.input_dir, output_dir=self.output_dir)
                     exit_code, job_id = result.exit_code, result.job_id
+                    if exit_code != 0:
+                        # docker-py does not raise on a non-zero exit -- the container ran fine
+                        # as far as Python is concerned, its own process just returned failure.
+                        # That is the common case for a real pipeline bug (an unhandled exception
+                        # inside run.py), and without this the failure would surface here only as
+                        # a bare exit code, with the actual traceback sitting unread in
+                        # result.logs. Tail rather than the whole log: a multi-document batch run
+                        # can produce megabytes of per-crop progress lines before the traceback.
+                        tail = "\n".join(result.logs.splitlines()[-40:])
+                        error = f"container exited {exit_code}\n{tail}"
                 except Exception as exc:
                     error = f"{type(exc).__name__}: {exc}"
                 # Measured before the `with` closes: GpuSampler.__exit__ joins the sampling
@@ -339,6 +377,38 @@ class Harness:
         }
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         return path
+
+
+def failures(records: list[RunRecord]) -> dict[str, dict]:
+    """Cases with zero successful measured runs -- the complement of aggregate() below.
+
+    A case whose every measured run fails identically (the same config, the same corpus, a
+    deterministic bug) never gets a key in aggregate()'s summary, since that function only ever
+    looks at successful runs. Left there, such a case simply vanishes from every report table --
+    indistinguishable from a case nobody ran. Found in practice: layout=doclayout-yolo paired with
+    tsr=tableformer failed its warmup and first measured run identically
+    ("x1 must be greater than or equal to x0", a real geometry bug in
+    stages/tsr/backends/base.py's col_boxes(), unrelated to this harness) and would otherwise have
+    disappeared from the latency table with no indication it was ever attempted.
+
+    Returns {case: {"attempts": n, "errors": [distinct error strings]}} for every case where every
+    non-warmup run failed. A case with at least one success is not "failed" even if some repeats
+    errored -- that partial-failure signal belongs in the successful case's own row (a future
+    improvement), not here.
+    """
+    by_case: dict[str, list[RunRecord]] = {}
+    for record in records:
+        if record.warmup:
+            continue
+        by_case.setdefault(record.case, []).append(record)
+
+    out: dict[str, dict] = {}
+    for case_name, runs in by_case.items():
+        if any(r.exit_code == 0 for r in runs):
+            continue
+        errors = sorted({r.error or f"exit code {r.exit_code}" for r in runs})
+        out[case_name] = {"attempts": len(runs), "errors": errors}
+    return out
 
 
 def aggregate(records: list[RunRecord]) -> dict[str, dict]:

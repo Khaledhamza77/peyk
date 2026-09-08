@@ -73,6 +73,20 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_live(args: argparse.Namespace) -> int:
+    from .live import snapshot_report
+
+    text = snapshot_report(since_ts=args.since)
+    if args.out:
+        out = Path(args.out).resolve()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+        print(f"wrote {out}")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
 def _cmd_cards(args: argparse.Namespace) -> int:
     from . import report
 
@@ -113,6 +127,13 @@ def main(argv: list[str] | None = None) -> int:
 
     cards = sub.add_parser("cards", help="published model-card figures only (no Docker/GPU needed)")
     cards.set_defaults(func=_cmd_cards)
+
+    live = sub.add_parser("live", help="partial latency snapshot from a sweep still in progress")
+    live.add_argument("--since", type=float, required=True,
+                      help="unix timestamp: only jobs started at or after this count (use the "
+                           "time you launched the sweep, e.g. `date +%%s` right before `run`)")
+    live.add_argument("--out", default=None, help="write here instead of stdout")
+    live.set_defaults(func=_cmd_live)
 
     args = parser.parse_args(argv)
     return args.func(args)
