@@ -110,9 +110,17 @@ class ColBox:
 
 
 def col_boxes(structure: TableStructure, image_width: float, image_height: float) -> list[ColBox]:
-    """Ported verbatim from peyk-tsr/backends/base.py — see that file for the full rationale
+    """Ported from peyk-tsr/backends/base.py — see that file for the full rationale
     (full-crop-height column bands, boundaries extended to the midpoint with each neighbor so
-    every x-position belongs to exactly one column)."""
+    every x-position belongs to exactly one column) and for why the boundary sequence is built
+    as a running maximum rather than each span's edges being clamped pairwise in place: a
+    noisy/garbled structure prediction can put an interior column's raw x-range so far out of
+    index order that a pairwise clamp against only its immediate neighbor still inverts it once
+    an already-adjusted edge collides with a raw edge two columns down the line. Not just a
+    theoretical case here either — this path has no `--visualize` guard at all (unlike
+    peyk-tsr's draw-time crash, an inverted box here would silently corrupt regularized_cells()'s
+    real OCR crop regions on genuinely noisy/scanned-table predictions, exactly the input this
+    stage's own smart-table-split feature exists to handle, with no crash to surface it."""
     cols: dict[int, list[tuple[float, float, float, float]]] = {}
     for cell in structure.cells:
         for c in range(cell.col, cell.col + cell.col_span):
@@ -124,15 +132,16 @@ def col_boxes(structure: TableStructure, image_width: float, image_height: float
         boxes = cols[c]
         spans.append([min(b[0] for b in boxes), max(b[2] for b in boxes)])
 
+    boundaries = [0.0]
     for i in range(len(spans) - 1):
-        boundary = (spans[i][1] + spans[i + 1][0]) / 2
-        spans[i][1] = boundary
-        spans[i + 1][0] = boundary
-    if spans:
-        spans[0][0] = 0.0
-        spans[-1][1] = image_width
+        midpoint = (spans[i][1] + spans[i + 1][0]) / 2
+        boundaries.append(max(midpoint, boundaries[-1]))
+    boundaries.append(image_width)
 
-    return [ColBox(col=c, bbox=(x0, 0.0, x1, image_height)) for c, (x0, x1) in zip(indices, spans)]
+    return [
+        ColBox(col=c, bbox=(boundaries[i], 0.0, boundaries[i + 1], image_height))
+        for i, c in enumerate(indices)
+    ]
 
 
 def regularized_cells(structure: TableStructure, rows: list[RowBox], cols: list[ColBox]) -> list[dict]:
